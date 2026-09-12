@@ -40,10 +40,13 @@ Two ways to combine engine and skills:
 | **Source build** (no `EngineImage`) | The checkout's code is built together with the skills | Development, or a deployment that needs an unreleased change |
 
 Releases: pushing a tag `vX.Y.Z` to the public repository runs the tests and publishes
-`ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` (and `:latest`). The package must be public, or
-the deploying registry needs pull credentials for GHCR. Upgrading a deployment is changing the tag
-in its profile and running the deploy script again; rolling back is the reverse. Skills change
-independently: edit, redeploy with the same tag.
+`ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` (and `:latest`). GitHub creates the container
+package **private** on its first publish; an organisation owner makes it public once
+(package page, **Package settings**, **Change visibility**), after which any Azure registry build can
+pull it anonymously. Until then `-EngineImage` builds fail with an authentication error and you use
+a source build. Upgrading a deployment is changing the tag in its profile and running the deploy
+script again; rolling back is the reverse. Skills change independently: edit, redeploy with the
+same tag.
 
 This gives one place to develop (the public repository, with the example skills and the test suite)
 and as many deployments as you have organisations, each with its own Entra app, registry, container
