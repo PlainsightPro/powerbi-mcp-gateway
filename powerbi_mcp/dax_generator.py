@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 
 class ResponsesClient(Protocol):
-    """The slice of the OpenAI Responses API we use (lets tests inject a stub)."""
+    """The slice of the OpenAI Responses API we use (lets tests inject a stub).
 
-    async def create(self, **kwargs: Any) -> Any: ...
+    Declared as a read-only callable property rather than a method so that the SDK's overloaded
+    `AsyncResponses.create` and a plain test stub both satisfy it.
+    """
+
+    @property
+    def create(self) -> Callable[..., Awaitable[Any]]: ...
 
 
 @dataclass
@@ -31,8 +37,15 @@ DAX_OUTPUT_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "dax": {"type": "string", "description": "One complete DAX query with exactly one EVALUATE statement."},
-        "explanation": {"type": "string", "description": "Two or three sentences: which measures, tables and filters were used and why."},
-        "assumptions": {"type": "array", "items": {"type": "string"}, "description": "Interpretations made where the question was ambiguous."},
+        "explanation": {
+            "type": "string",
+            "description": "Two or three sentences: which measures, tables and filters were used and why.",
+        },
+        "assumptions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Interpretations made where the question was ambiguous.",
+        },
     },
     "required": ["dax", "explanation", "assumptions"],
 }
@@ -75,8 +88,12 @@ def parse_generation(raw: str) -> GeneratedDax:
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict) and "dax" in obj:
-            return GeneratedDax(dax=obj["dax"].strip(), explanation=obj.get("explanation", "").strip(),
-                                assumptions=list(obj.get("assumptions") or []), raw=raw)
+            return GeneratedDax(
+                dax=obj["dax"].strip(),
+                explanation=obj.get("explanation", "").strip(),
+                assumptions=list(obj.get("assumptions") or []),
+                raw=raw,
+            )
     except json.JSONDecodeError:
         pass
     m = _FENCE.search(raw)
@@ -100,8 +117,9 @@ class DaxGenerator:
         self._rules = rules
         self._effort = reasoning_effort
 
-    def build_prompt(self, question: str, schema_text: str, model_notes: str, glossary: str,
-                     chat_history: list[dict] | None = None) -> tuple[str, str]:
+    def build_prompt(
+        self, question: str, schema_text: str, model_notes: str, glossary: str, chat_history: list[dict] | None = None
+    ) -> tuple[str, str]:
         instructions = (
             "You write DAX queries for Power BI semantic models. Answer only with the JSON object requested. "
             "Use existing measures whenever one answers the question; never re-aggregate a column that a measure already covers.\n\n"
@@ -111,12 +129,16 @@ class DaxGenerator:
         history = ""
         if chat_history:
             history = "\n\n## Earlier turns\n" + "\n".join(
-                f"{t.get('role', 'user')}: {t.get('content', '')}" for t in chat_history[-6:])
+                f"{t.get('role', 'user')}: {t.get('content', '')}" for t in chat_history[-6:]
+            )
         user = (
-            "## Model notes\n" + (model_notes.strip() or "(none)") +
-            "\n\n## Model schema\n" + schema_text +
-            history +
-            "\n\n## Question\n" + question.strip()
+            "## Model notes\n"
+            + (model_notes.strip() or "(none)")
+            + "\n\n## Model schema\n"
+            + schema_text
+            + history
+            + "\n\n## Question\n"
+            + question.strip()
         )
         return instructions, user
 
@@ -134,18 +156,22 @@ class DaxGenerator:
         validate_dax(result.dax)
         return result
 
-    async def generate(self, question: str, schema: dict, model_notes: str, glossary: str,
-                       chat_history: list[dict] | None = None) -> GeneratedDax:
+    async def generate(
+        self, question: str, schema: dict, model_notes: str, glossary: str, chat_history: list[dict] | None = None
+    ) -> GeneratedDax:
         instructions, user = self.build_prompt(question, compact_schema(schema), model_notes, glossary, chat_history)
         return await self._ask(instructions, user)
 
-    async def repair(self, question: str, schema: dict, model_notes: str, glossary: str,
-                     failed_dax: str, error: str) -> GeneratedDax:
+    async def repair(
+        self, question: str, schema: dict, model_notes: str, glossary: str, failed_dax: str, error: str
+    ) -> GeneratedDax:
         """Second attempt after the engine rejected the query: same grounding plus the exact error."""
         instructions, user = self.build_prompt(question, compact_schema(schema), model_notes, glossary)
         user += (
-            "\n\n## Previous attempt (rejected by the Power BI engine)\n" + failed_dax.strip() +
-            "\n\n## Engine error\n" + error.strip()[:2000] +
-            "\n\nFix the query so it runs. Keep the same intent; change only what the error requires."
+            "\n\n## Previous attempt (rejected by the Power BI engine)\n"
+            + failed_dax.strip()
+            + "\n\n## Engine error\n"
+            + error.strip()[:2000]
+            + "\n\nFix the query so it runs. Keep the same intent; change only what the error requires."
         )
         return await self._ask(instructions, user)

@@ -8,13 +8,27 @@ from powerbi_mcp.dax_generator import DaxGenerator, compact_schema, parse_genera
 SCHEMA = {
     "schema": {
         "Tables": [
-            {"Name": "GL Account", "Measures": [
-                {"Name": "Gross Margin", "Type": "Double"},
-                {"Name": "Indirect Cost", "Description": "Indirect overhead cost as a positive amount.", "Type": "Double"}],
-             "Columns": [{"Name": "GL Account Code", "Type": "Text", "FormatString": "0"}]},
-            {"Name": "P&L View", "Description": "Disconnected selector.", "Columns": [{"Name": "P&L View", "Type": "Text"}]},
+            {
+                "Name": "GL Account",
+                "Measures": [
+                    {"Name": "Gross Margin", "Type": "Double"},
+                    {
+                        "Name": "Indirect Cost",
+                        "Description": "Indirect overhead cost as a positive amount.",
+                        "Type": "Double",
+                    },
+                ],
+                "Columns": [{"Name": "GL Account Code", "Type": "Text", "FormatString": "0"}],
+            },
+            {
+                "Name": "P&L View",
+                "Description": "Disconnected selector.",
+                "Columns": [{"Name": "P&L View", "Type": "Text"}],
+            },
         ],
-        "ActiveRelationships": [{"PK": "'GL Account'[GL Account Code]", "FK": "'Financial Transaction'[glAccountCode]"}],
+        "ActiveRelationships": [
+            {"PK": "'GL Account'[GL Account Code]", "FK": "'Financial Transaction'[glAccountCode]"}
+        ],
         "CalculationGroups": [{"Name": "Time Intelligence"}],
     }
 }
@@ -25,7 +39,10 @@ def test_compact_schema_keeps_names_descriptions_relationships_and_drops_format_
     assert "TABLE 'GL Account'" in text
     assert "measure [Indirect Cost] : Double  -- Indirect overhead cost as a positive amount." in text
     assert "TABLE 'P&L View'  -- Disconnected selector." in text
-    assert "ACTIVERELATIONSHIPS:" in text and "'GL Account'[GL Account Code] -> 'Financial Transaction'[glAccountCode]" in text
+    assert (
+        "ACTIVERELATIONSHIPS:" in text
+        and "'GL Account'[GL Account Code] -> 'Financial Transaction'[glAccountCode]" in text
+    )
     assert "CALCULATION GROUP 'Time Intelligence'" in text
     assert "FormatString" not in text
 
@@ -51,16 +68,27 @@ class StubResponses:
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(output_text=json.dumps({
-            "dax": "EVALUATE SUMMARIZECOLUMNS('GL Account'[GL Account Code], \"Cost\", [Indirect Cost])",
-            "explanation": "uses the positive indirect cost measure", "assumptions": ["current year"]}))
+        return SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "dax": "EVALUATE SUMMARIZECOLUMNS('GL Account'[GL Account Code], \"Cost\", [Indirect Cost])",
+                    "explanation": "uses the positive indirect cost measure",
+                    "assumptions": ["current year"],
+                }
+            )
+        )
 
 
 async def test_generator_builds_grounded_prompt_and_returns_dax():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- one EVALUATE", reasoning_effort="low")
-    out = await gen.generate("waarom stijgen de indirecte kosten", SCHEMA, "Model: Finance", "Glossary text",
-                             chat_history=[{"role": "user", "content": "earlier question"}])
+    out = await gen.generate(
+        "waarom stijgen de indirecte kosten",
+        SCHEMA,
+        "Model: Finance",
+        "Glossary text",
+        chat_history=[{"role": "user", "content": "earlier question"}],
+    )
     assert out.dax.startswith("EVALUATE") and out.assumptions == ["current year"]
     call = stub.calls[0]
     assert call["model"] == "gpt-5" and call["reasoning"] == {"effort": "low"}
@@ -73,8 +101,9 @@ async def test_generator_builds_grounded_prompt_and_returns_dax():
 async def test_repair_feeds_back_the_failed_query_and_engine_error():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- rules", reasoning_effort="low")
-    out = await gen.repair("vraag", SCHEMA, "notes", "glossary",
-                           failed_dax="EVALUATE ROW(1']", error="The syntax for ']' is incorrect.")
+    out = await gen.repair(
+        "vraag", SCHEMA, "notes", "glossary", failed_dax="EVALUATE ROW(1']", error="The syntax for ']' is incorrect."
+    )
     assert out.dax.startswith("EVALUATE")
     user = stub.calls[0]["input"]
     assert "Previous attempt" in user and "EVALUATE ROW(1']" in user and "syntax for ']'" in user

@@ -29,11 +29,11 @@ architecture; this file is for working in the code.
 ## Commands (Windows, PowerShell or Git Bash)
 
 ```
-uv venv .venv --python 3.11
-uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
-.venv/Scripts/python.exe -m pytest -q
-.venv/Scripts/python.exe -m powerbi_mcp                 # http://localhost:8000/mcp
-.venv/Scripts/python.exe scripts/smoke_test.py "question"
+uv sync                                                 # .venv from uv.lock, including the dev group
+uv run ruff check . && uv run ruff format --check . && uv run pyright
+uv run pytest -q
+uv run python -m powerbi_mcp                            # http://localhost:8000/mcp
+uv run python scripts/smoke_test.py "question"
 .\deploy\deploy_to_azure.ps1 -AcrName <yourUniqueRegistry>                 # example skills, source build
 .\deploy\deploy_to_azure.ps1 -Profile C:\deployments\<org>\deploy\profile.json   # private skills + names
 ```
@@ -72,4 +72,4 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 - `az acr build` log streaming crashes on Unicode on Windows (`az.cmd` runs Python with `-I`, so
   `PYTHONUTF8` cannot help); the script queues with `--no-logs` and polls the run.
 - JSON bodies for `az rest --body` go through a temp file (`@file`), never inline.
-- `azure.identity.aio` needs `aiohttp`; it is in requirements for that reason.
+- `azure.identity.aio` needs `aiohttp`; it is a declared dependency for that reason.

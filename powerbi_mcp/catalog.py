@@ -31,11 +31,10 @@ class Catalog:
         self._by_id = {e.id.lower(): e for e in entries}
 
     @classmethod
-    def load(cls, path: Path) -> "Catalog":
+    def load(cls, path: Path) -> Catalog:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         entries = [
-            CatalogEntry(**{k: v for k, v in item.items() if k in _ENTRY_FIELDS})
-            for item in raw.get("models", [])
+            CatalogEntry(**{k: v for k, v in item.items() if k in _ENTRY_FIELDS}) for item in raw.get("models", [])
         ]
         return cls(entries)
 

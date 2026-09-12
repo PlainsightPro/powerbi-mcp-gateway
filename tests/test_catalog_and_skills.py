@@ -21,8 +21,13 @@ def test_merge_only_returns_accessible_models_curated_first(skills_dir):
     curated = catalog.entries[0]
     hidden = catalog.entries[1] if len(catalog.entries) > 1 else None
     accessible = [
-        SemanticModelRef(id="ffffffff-0000-0000-0000-000000000000", name="Scratch model",
-                         workspace_id="w1", workspace_name="Sandbox", description="ad hoc"),
+        SemanticModelRef(
+            id="ffffffff-0000-0000-0000-000000000000",
+            name="Scratch model",
+            workspace_id="w1",
+            workspace_name="Sandbox",
+            description="ad hoc",
+        ),
         SemanticModelRef(id=curated.id, name=curated.name, workspace_id="w2", workspace_name=curated.workspace),
     ]
     rows = catalog.merge(accessible)
@@ -44,7 +49,12 @@ def test_skills_load_everything(skills_dir):
 
 
 def test_skills_folder_without_recipes(tmp_path):
-    for name, text in {"instructions.md": "i", "glossary.md": "g", "dax-rules.md": "r", "catalog.yaml": "models: []\n"}.items():
+    for name, text in {
+        "instructions.md": "i",
+        "glossary.md": "g",
+        "dax-rules.md": "r",
+        "catalog.yaml": "models: []\n",
+    }.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     skills = Skills.load(tmp_path)
     assert skills.recipes == {} and skills.recipe_index() == "(no recipes)"

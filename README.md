@@ -126,11 +126,10 @@ Cursor: `{"type": "http", "url": "https://<host>/mcp"}` in the MCP settings file
 ## Local development
 
 ```powershell
-uv venv .venv --python 3.11
-uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
+uv sync                                  # .venv from uv.lock, dev tools included (ruff, pyright, pytest)
 Copy-Item .env.example .env             # Entra app values, Foundry endpoint, optional PBIMCP_SKILLS_DIR
-.venv/Scripts/python.exe -m pytest -q
-.venv/Scripts/python.exe -m powerbi_mcp   # http://localhost:8000/mcp
+uv run pytest -q
+uv run python -m powerbi_mcp             # http://localhost:8000/mcp
 ```
 
 `http://localhost:8000/auth/callback` is registered on the Entra app by the deploy script, so a

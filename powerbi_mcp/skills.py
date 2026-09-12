@@ -14,15 +14,16 @@ class Skills:
     recipes: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, skills_dir: Path) -> "Skills":
+    def load(cls, skills_dir: Path) -> Skills:
         def read(name: str) -> str:
             return (skills_dir / name).read_text(encoding="utf-8")
 
         recipes_dir = skills_dir / "recipes"
-        recipes = {
-            p.stem: p.read_text(encoding="utf-8")
-            for p in sorted(recipes_dir.glob("*.md"))
-        } if recipes_dir.exists() else {}
+        recipes = (
+            {p.stem: p.read_text(encoding="utf-8") for p in sorted(recipes_dir.glob("*.md"))}
+            if recipes_dir.exists()
+            else {}
+        )
         return cls(
             instructions=read("instructions.md"),
             glossary=read("glossary.md"),

@@ -1,4 +1,5 @@
 """Exercise the actual build staging helper without Azure or private business files."""
+
 import json
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-PWSH = shutil.which("pwsh")
+PWSH = shutil.which("pwsh") or ""
 pytestmark = pytest.mark.skipif(not PWSH, reason="PowerShell 7 required for deployment helper tests")
 
 
@@ -23,7 +24,7 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
     (private / "notes.txt").write_text("must-not-upload", encoding="utf-8")
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy' / 'build_context.ps1')}
+    . {ps_quote(ROOT / "deploy" / "build_context.ps1")}
     $context = New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(private)}
     try {{
         $files = @(Get-ChildItem -LiteralPath $context -Recurse -File | ForEach-Object {{ $_.FullName.Substring($context.Length + 1).Replace('\\', '/') }})
@@ -44,7 +45,7 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
 def test_incomplete_skills_fail_before_build_and_cleanup_refuses_other_paths(tmp_path):
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy' / 'build_context.ps1')}
+    . {ps_quote(ROOT / "deploy" / "build_context.ps1")}
     $rejected = $false
     try {{ New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(tmp_path)} }}
     catch {{ $rejected = $_.Exception.Message -like '*missing instructions.md*' }}

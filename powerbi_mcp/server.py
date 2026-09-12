@@ -17,7 +17,8 @@ recipe and catalog row comes from the skills folder the deployment was built wit
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -149,7 +150,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
         try:
             schema = await hosted.get_schema(model_id)
-        except Exception as exc:  # noqa: BLE001 - every failure becomes a readable tool error
+        except Exception as exc:
             raise _as_tool_error(exc) from exc
         finally:
             await hosted.aclose()
@@ -173,7 +174,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             client = FabricClient(fabric_token, settings.fabric_api_url)
             try:
                 accessible = await client.list_accessible_models()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise _as_tool_error(exc) from exc
             finally:
                 await client.aclose()
@@ -227,7 +228,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
         try:
             return await hosted.execute_query(model_id, dax_queries, max_rows or settings.default_max_rows)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise _as_tool_error(exc) from exc
         finally:
             await hosted.aclose()
@@ -252,7 +253,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             generated = await generator().generate(question, schema, notes, skills.glossary, chat_history)
         except ToolError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ToolError(f"DAX generation failed: {type(exc).__name__}: {exc}") from exc
 
         result: dict[str, Any] = {
@@ -269,17 +270,25 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             rows = max_rows or settings.default_max_rows
             try:
                 run = await hosted.execute_query(model_id, [generated.dax], rows)
-            except Exception as first_exc:  # noqa: BLE001 - give the model one shot at fixing its own query
+            except Exception as first_exc:
                 first_error = str(_as_tool_error(first_exc))
                 try:
-                    repaired = await generator().repair(question, schema, notes, skills.glossary, generated.dax, first_error)
+                    repaired = await generator().repair(
+                        question, schema, notes, skills.glossary, generated.dax, first_error
+                    )
                     run = await hosted.execute_query(model_id, [repaired.dax], rows)
-                except Exception as second_exc:  # noqa: BLE001 - return both errors and the DAX for the client
+                except Exception as second_exc:
                     result["execution_error"] = first_error
                     result["repair_error"] = str(_as_tool_error(second_exc))
                     return result
-                result.update({"dax": repaired.dax, "explanation": repaired.explanation,
-                               "assumptions": repaired.assumptions, "repaired_after": first_error})
+                result.update(
+                    {
+                        "dax": repaired.dax,
+                        "explanation": repaired.explanation,
+                        "assumptions": repaired.assumptions,
+                        "repaired_after": first_error,
+                    }
+                )
             result["result"] = run.get("executionResult", run)
         finally:
             await hosted.aclose()
@@ -296,7 +305,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
         try:
             return await hosted.get_report_metadata(report_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise _as_tool_error(exc) from exc
         finally:
             await hosted.aclose()

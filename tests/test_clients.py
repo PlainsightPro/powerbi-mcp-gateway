@@ -25,22 +25,38 @@ async def test_hosted_call_tool_decodes_text_payload():
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content))
         assert request.headers["authorization"] == "Bearer user-token"
-        return _sse({"jsonrpc": "2.0", "id": 1, "result": {"content": [
-            {"type": "text", "text": json.dumps({"executionResult": {"tables": [{"rows": [[1]]}]}})}]}})
+        return _sse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {"type": "text", "text": json.dumps({"executionResult": {"tables": [{"rows": [[1]]}]}})}
+                    ]
+                },
+            }
+        )
 
     client = HostedPowerBIMcp("user-token", "https://example.test/mcp", transport=httpx.MockTransport(handler))
     result = await client.execute_query("model-1", ['EVALUATE ROW("x", 1)'], max_rows=5)
     await client.aclose()
     assert result["executionResult"]["tables"][0]["rows"] == [[1]]
     assert seen[0]["method"] == "tools/call"
-    assert seen[0]["params"] == {"name": "ExecuteQuery", "arguments": {
-        "artifactId": "model-1", "daxQueries": ['EVALUATE ROW("x", 1)'], "maxRows": 5}}
+    assert seen[0]["params"] == {
+        "name": "ExecuteQuery",
+        "arguments": {"artifactId": "model-1", "daxQueries": ['EVALUATE ROW("x", 1)'], "maxRows": 5},
+    }
 
 
 async def test_hosted_error_surfaces_code_and_data():
     def handler(_: httpx.Request) -> httpx.Response:
-        return _sse({"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "nope",
-                                                            "data": {"error-code": "AI_Scenarios_SkuNotSupported"}}})
+        return _sse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32600, "message": "nope", "data": {"error-code": "AI_Scenarios_SkuNotSupported"}},
+            }
+        )
 
     client = HostedPowerBIMcp("t", "https://example.test/mcp", transport=httpx.MockTransport(handler))
     with pytest.raises(HostedMcpError) as err:
@@ -51,8 +67,15 @@ async def test_hosted_error_surfaces_code_and_data():
 
 async def test_hosted_plain_text_answer_on_structured_tool_is_an_error():
     def handler(_: httpx.Request) -> httpx.Response:
-        return _sse({"jsonrpc": "2.0", "id": 1, "result": {"content": [
-            {"type": "text", "text": "Query execution failed: The syntax for ']' is incorrect."}]}})
+        return _sse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": "Query execution failed: The syntax for ']' is incorrect."}]
+                },
+            }
+        )
 
     client = HostedPowerBIMcp("t", "https://example.test/mcp", transport=httpx.MockTransport(handler))
     with pytest.raises(HostedMcpError, match="syntax"):
@@ -80,8 +103,9 @@ async def test_fabric_lists_models_per_workspace_with_paging():
 
 
 async def test_fabric_401_is_an_access_error():
-    client = FabricClient("t", "https://api.test/v1",
-                          transport=httpx.MockTransport(lambda r: httpx.Response(401, text="expired")))
+    client = FabricClient(
+        "t", "https://api.test/v1", transport=httpx.MockTransport(lambda r: httpx.Response(401, text="expired"))
+    )
     with pytest.raises(FabricAccessError):
         await client.list_workspaces()
     await client.aclose()
