@@ -12,16 +12,26 @@ model schema: everything domain-specific comes from a *skills folder* that each 
 ## Why
 
 Microsoft's hosted Power BI MCP server can run DAX for a user, but it needs a model id you have to
-know, it carries no business vocabulary, and its DAX generation depends on Copilot, which is not
-available on Premium Per User. The gateway sits in front of it:
+know, it carries no business vocabulary, and its `GenerateQuery` tool runs on Copilot, which needs
+a Copilot licence and an F2 or P1 capacity (on Premium Per User it fails with
+`AI_Scenarios_SkuNotSupported`). The gateway sits in front of it:
 
 | Need | Microsoft's hosted server | Gateway |
 |---|---|---|
 | Which models exist | none; you must know the id | `list_semantic_models`: only what the user can open, curated ones with description, scope and key measures |
 | Business knowledge | none | server instructions, `get_business_context`, one prompt per recipe, `skill://` resources |
-| DAX generation | Copilot (needs Fabric capacity) | `generate_dax` on a Foundry (Azure OpenAI) deployment, grounded in schema, glossary and rules, with one repair round |
+| DAX generation | `GenerateQuery` on Copilot: Copilot licence plus F2/P1 capacity, not Premium Per User | `generate_dax` on your own Foundry (Azure OpenAI) deployment, grounded in schema, glossary and rules, with one repair round; no Copilot, no Fabric capacity |
 | Client onboarding | an Entra app registration per client | OAuth proxy with dynamic client registration: paste the URL, sign in |
 | Execution | schema, DAX, report metadata | the same, called with the user's on-behalf-of token, so Build permission and row-level security apply |
+
+The gateway never calls `GenerateQuery`. `generate_dax` writes the query on the deployment's own
+Foundry model and runs it through the hosted server's `ExecuteQuery`, which only needs Build
+permission on the model and an XMLA-capable workspace. Microsoft's open-source
+[skills-for-fabric](https://github.com/microsoft/skills-for-fabric) and
+[powerbi-modeling-mcp](https://github.com/microsoft/powerbi-modeling-mcp) take the same route:
+the client's own LLM writes the DAX, guided by skill files. There is no Microsoft library for DAX
+generation; the reusable part is their DAX guideline text, which a deployment can fold into its
+`skill://dax-rules`.
 
 Nothing runs under a service identity. Every Power BI call carries a token issued for the signed-in
 user, which is also what the Premium Per User terms of use require for multi-user applications.
