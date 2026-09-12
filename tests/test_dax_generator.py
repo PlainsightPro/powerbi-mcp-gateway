@@ -9,13 +9,13 @@ SCHEMA = {
     "schema": {
         "Tables": [
             {"Name": "GL Account", "Measures": [
-                {"Name": "EBITDA", "Type": "Double"},
+                {"Name": "Gross Margin", "Type": "Double"},
                 {"Name": "Indirect Cost", "Description": "Indirect overhead cost as a positive amount.", "Type": "Double"}],
              "Columns": [{"Name": "GL Account Code", "Type": "Text", "FormatString": "0"}]},
             {"Name": "P&L View", "Description": "Disconnected selector.", "Columns": [{"Name": "P&L View", "Type": "Text"}]},
         ],
         "ActiveRelationships": [{"PK": "'GL Account'[GL Account Code]", "FK": "'Financial Transaction'[glAccountCode]"}],
-        "CalculationGroups": [{"Name": "# EBITDA CG"}],
+        "CalculationGroups": [{"Name": "Time Intelligence"}],
     }
 }
 
@@ -26,7 +26,7 @@ def test_compact_schema_keeps_names_descriptions_relationships_and_drops_format_
     assert "measure [Indirect Cost] : Double  -- Indirect overhead cost as a positive amount." in text
     assert "TABLE 'P&L View'  -- Disconnected selector." in text
     assert "ACTIVERELATIONSHIPS:" in text and "'GL Account'[GL Account Code] -> 'Financial Transaction'[glAccountCode]" in text
-    assert "CALCULATION GROUP '# EBITDA CG'" in text
+    assert "CALCULATION GROUP 'Time Intelligence'" in text
     assert "FormatString" not in text
 
 

@@ -30,11 +30,12 @@ class Skills:
             recipes=recipes,
         )
 
+    def recipe_title(self, name: str) -> str:
+        """The recipe's first Markdown heading, or its file name when it has none."""
+        text = self.recipes.get(name, "")
+        return next((ln.lstrip("# ").strip() for ln in text.splitlines() if ln.startswith("#")), name)
+
     def recipe_index(self) -> str:
         if not self.recipes:
             return "(no recipes)"
-        lines = []
-        for name, text in self.recipes.items():
-            title = next((ln.lstrip("# ").strip() for ln in text.splitlines() if ln.startswith("#")), name)
-            lines.append(f"- {name}: {title}")
-        return "\n".join(lines)
+        return "\n".join(f"- {name}: {self.recipe_title(name)}" for name in self.recipes)

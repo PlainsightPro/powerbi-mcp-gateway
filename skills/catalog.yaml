@@ -1,26 +1,27 @@
-# Curated semantic-model catalog (example). Only models the signed-in user can actually open are
-# ever returned by list_semantic_models; this file adds business context for the ones you know.
-# Ids are Power BI semantic model (dataset) ids: app.powerbi.com/groups/{workspace}/datasets/{id}.
+# Curated semantic-model catalog (EXAMPLE, fictional company). Only models the signed-in user can
+# actually open are ever returned by list_semantic_models; this file adds business context for
+# the ones you know. Ids are Power BI semantic model (dataset) ids:
+# app.powerbi.com/groups/{workspace}/datasets/{id}
 models:
   - id: 11111111-1111-1111-1111-111111111111
-    name: Finance
-    workspace: Finance
+    name: Contoso Sales
+    workspace: Sales Analytics
     description: >
-      Group P&L on the bookkeeping bookings with management corrections. The model for revenue,
-      margin, indirect cost and EBITDA questions.
-    data_scope: All legal entities; filter 'Transactions'[Legal Entity] for one.
+      Invoice lines by product, store and customer with the retail KPIs (revenue, units, gross
+      margin, basket). The model for "how are sales doing" questions.
+    data_scope: All countries; filter 'Store'[Country] for one market.
     default_date_table: Date
-    key_measures: [Revenue, Direct Cost, Gross Margin, Overhead, Indirect Cost, EBITDA, EBITDA % Revenue]
-    recipes: [indirect-cost-analysis, ebitda-bridge]
+    key_measures: [Revenue, Units, Gross Margin, Gross Margin %, Average Order Value, Revenue YoY %]
+    recipes: [monthly-trend, top-movers, detail-drilldown]
     notes: |
-      The current month is incomplete until month-end bookings are loaded.
+      Returns are negative invoice lines; [Revenue] already nets them.
+      The current month is incomplete until the nightly load has run.
 
   - id: 22222222-2222-2222-2222-222222222222
-    name: Sales
-    workspace: Sales
-    description: CRM deals, pipeline stages, companies and owners.
-    data_scope: All business units.
+    name: Contoso Inventory
+    workspace: Supply Chain
+    description: Stock on hand, days of cover and stock-outs per warehouse and product.
+    data_scope: All warehouses.
     default_date_table: Date
-    key_measures: [Won Amount, Open Pipeline, Deal Count]
-    notes: |
-      Stage labels repeat across pipelines: scope every funnel to one pipeline.
+    key_measures: [Stock Units, Stock Value, Days of Cover, Stock-out Days]
+    recipes: [monthly-trend, top-movers]

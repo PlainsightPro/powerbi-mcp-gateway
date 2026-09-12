@@ -1,36 +1,39 @@
-# Contoso finance glossary (example)
+# Contoso Retail glossary (EXAMPLE)
 
-This folder is an example. Point `PBIMCP_SKILLS_DIR` at your own folder (or pass `-SkillsDir` to the
-deploy script) to replace it with your organisation's vocabulary, models and recipes.
+This file is the deployment's business vocabulary. It is returned by `get_business_context` and fed
+to the DAX generator with every question, so write it for a reader who has never seen the models:
+which measure answers which question, sign conventions, which date table to use, known traps.
+The content below describes a fictional company. See docs/skills-authoring.md for the pattern.
 
-## Core P&L measures (table 'GL Account')
+## Key measures (table 'Sales')
 
-| Term | Measure | Meaning and sign |
+| Business term | Measure | Meaning and sign |
 |---|---|---|
-| Revenue | [Revenue] | Billable revenue. Positive. |
-| Direct cost | [Direct Cost] | Cost tied to delivery. Negative. |
-| Gross margin | [Gross Margin] | [Revenue] + [Direct Cost]. |
-| Overhead (net) | [Overhead] | Indirect income and cost. Negative when it is a cost. |
-| Indirect cost (positive) | [Indirect Cost] | The same overhead as a positive amount. Use it when the user talks about indirect costs growing. |
-| EBITDA | [EBITDA] | [Gross Margin] + [Overhead]. Positive is profit. |
-| Ratios | [Gross Margin % Revenue], [EBITDA % Revenue], [Indirect Cost % Revenue] | Fractions (0.129 = 12.9 %). |
+| Revenue, sales, turnover | [Revenue] | Net invoiced amount excluding VAT. Positive. |
+| Units sold | [Units] | Quantity invoiced. |
+| Cost of goods | [COGS] | Cost of the units sold. Positive amount; subtract it from revenue. |
+| Gross margin | [Gross Margin] | [Revenue] - [COGS]. |
+| Margin % | [Gross Margin %] | [Gross Margin] / [Revenue], a fraction (0.32 = 32 %). |
+| Average basket | [Average Order Value] | [Revenue] / [Orders]. |
 
-Year-over-year block: [Indirect Cost This Year], [Indirect Cost Last Year], [Indirect Cost Growth]
-(positive = cost grew). "This year" is the year in filter context; put one year in context first.
+Year-over-year block: [Revenue LY], [Revenue YoY %]. "This year" is the year in filter context.
 
 ## Which table answers what
 
-- 'Transactions' (fact): [Transaction Amount] (natural sign), [Transaction Count]. Drill-down columns:
-  [Description], [Counterparty], [Transaction Date], [Legal Entity].
-- 'GL Account' (dimension): [GL Account Code], [GL Account Name], [GL Account Type], [P&L Subcategory].
-- 'Cost Category': management classification (direct vs indirect) with [Financial Breakdown].
-- 'Customer': [Customer Name]; revenue per customer through the allocation table.
-- 'Date': default date table. [Year] (integer), [Year Month] (text), [Year Month Id] (integer yyyymm).
+- 'Sales' (fact): one row per invoice line. Drill-down columns: [Invoice Number], [Invoice Date].
+- 'Product' (dimension): [Category], [Subcategory], [Product Name], [Brand].
+- 'Store' (dimension): [Store Name], [Region], [Country], [Store Format].
+- 'Customer' (dimension): [Customer Segment], [Loyalty Tier].
+- 'Date': the only date table. [Year] (integer), [Year Month] (text), [Year Month Id] (integer yyyymm).
 
 ## Vocabulary the business uses
 
-- "Indirect costs are rising" -> [Indirect Cost] per month, then drivers by GL account and by cost
-  category, then the transaction detail behind the biggest movers.
-- "Margin" without qualifier -> [Gross Margin]; "margin on revenue" -> [Gross Margin % Revenue].
-- "Result" -> [EBITDA] unless the user says "profit before tax".
-- "Entity" -> filter 'Transactions'[Legal Entity].
+- "Like-for-like" -> compare stores open in both periods: filter 'Store'[Comparable] = TRUE.
+- "Season" -> 'Date'[Season] (Spring, Summer, Autumn, Winter), not calendar quarters.
+- "Region" without qualifier -> 'Store'[Region]; "market" -> 'Store'[Country].
+- Returns are negative invoice lines; [Revenue] already nets them.
+
+## Traps
+
+- 'Product'[Category] and 'Product'[Subcategory] share names for some rows; always show both.
+- The current month is incomplete until the nightly load has run.

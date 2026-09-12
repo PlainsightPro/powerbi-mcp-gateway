@@ -16,9 +16,14 @@ architecture; this file is for working in the code.
 | `powerbi_mcp/catalog.py` | Curated catalog (`skills/catalog.yaml`) merged with the user's accessible models |
 | `powerbi_mcp/dax_generator.py` | gpt-5 DAX generation + one repair round, strict JSON output |
 | `powerbi_mcp/skills.py` | Loads the skills folder once at startup |
-| `skills/` | Example skills (fictional company). Real skills live in a private folder: `PBIMCP_SKILLS_DIR` / `-SkillsDir` |
-| `deploy/deploy_to_azure.ps1` | Idempotent Azure deploy (Entra app, Foundry, ACR, Container Apps) |
+| `skills/` | Example skills (fictional Contoso Retail). Real skills live in a private folder: `PBIMCP_SKILLS_DIR` / `-SkillsDir` |
+| `deploy/deploy_to_azure.ps1` | Idempotent Azure deploy (Entra app, Foundry, ACR, Container Apps); `-Profile` JSON, `-EngineImage` |
+| `deploy/build_context.ps1` | Stages only runtime code + selected skills, or `FROM <engine image>` + skills |
+| `deploy/profiles/example.json` | Every profile key, fictional values |
+| `.github/workflows/release.yml` | Tag `vX.Y.Z` publishes `ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` |
 | `scripts/smoke_test.py` | Headless end-to-end check of everything behind the OAuth proxy |
+| `scripts/check_gateway.py` | Real-OAuth check of a deployed gateway |
+| `docs/` | Consumer walkthroughs per client, usage guidelines, troubleshooting, administration, skills authoring |
 | `tests/` | pytest, no network (httpx MockTransport, stub Responses client) |
 
 ## Commands (Windows, PowerShell or Git Bash)
@@ -29,7 +34,8 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m powerbi_mcp                 # http://localhost:8000/mcp
 .venv/Scripts/python.exe scripts/smoke_test.py "question"
-.\deploy\deploy_to_azure.ps1 -SkillsDir C:\path\to\private\skills
+.\deploy\deploy_to_azure.ps1 -AcrName <yourUniqueRegistry>                 # example skills, source build
+.\deploy\deploy_to_azure.ps1 -Profile C:\deployments\<org>\deploy\profile.json   # private skills + names
 ```
 
 `.env` (git-ignored) carries the Entra client id/secret and the Foundry endpoint; copy from
@@ -46,9 +52,13 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
   app's delegated Power BI permissions is what makes the OBO exchange work.
 - Text answers on structured hosted-MCP tools are errors (that is how the hosted server reports a
   DAX syntax error); `generate_dax` then gets one repair round with the engine message.
-- Skills are data, not code: change `skills/*` (or the private folder), redeploy, done. Tests assert
-  the example skills' structure (recipe names, an `[Indirect Cost]` mention, `GenerateQuery` in the
-  instructions); keep those tokens when editing the examples.
+- The engine carries no domain vocabulary. Tool names are generic (`get_business_context`,
+  `get_recipe`), MCP prompts are generated one-per-recipe from the skills folder, and tests assert
+  structure only (recipes on disk == prompts; a fixture with an invented recipe must work). Never
+  hard-code a recipe name, a measure or a company term in `powerbi_mcp/` or `tests/`.
+- Keep public examples fictional (Contoso Retail) and free of any real organisation's terms. See
+  `docs/private-skills.md` for one codebase with private skill folders and deployment profiles.
+  Skills are deployment-wide, not permission-filtered.
 - One replica: the proxy stores registered clients and encrypted upstream tokens on local disk.
   Add a `client_storage` backend before scaling out.
 

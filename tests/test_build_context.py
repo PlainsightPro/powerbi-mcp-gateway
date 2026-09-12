@@ -35,7 +35,8 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
     staged = json.loads(result.stdout)
     assert staged["glossary"] == "private glossary fixture"
     assert "powerbi_mcp/server.py" in staged["files"]
-    assert "skills/recipes/ebitda-bridge.md" in staged["files"]
+    expected_recipes = {f"skills/recipes/{p.name}" for p in (ROOT / "skills" / "recipes").glob("*.md")}
+    assert expected_recipes and expected_recipes <= set(staged["files"])
     assert not any(".env" in name or "notes.txt" in name or ".git" in name for name in staged["files"])
     assert (private / ".env").exists()
 

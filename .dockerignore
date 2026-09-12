@@ -1,5 +1,8 @@
 .venv/
 .env
+.env.*
+.local/
+.fastmcp/
 .git/
 .pytest_cache/
 __pycache__/

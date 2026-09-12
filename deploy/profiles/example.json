@@ -1,0 +1,18 @@
+{
+  "$comment": "Deployment profile for the fictional Contoso deployment. Copy this file into a private deployment folder next to a skills/ folder and run the gateway's deploy script with -Profile <this file>. Keys are the parameter names of deploy/deploy_to_azure.ps1; explicit command-line arguments override them. SkillsDir is resolved relative to this file.",
+  "Location": "swedencentral",
+  "ResourceGroup": "rg-powerbi-mcp-contoso",
+  "AppName": "ca-powerbi-mcp",
+  "EnvName": "env-powerbi-mcp",
+  "LogName": "log-powerbi-mcp",
+  "AcrName": "acrcontosopbimcp",
+  "FoundryName": "aif-contoso-powerbi-mcp",
+  "FoundryProject": "powerbi-mcp",
+  "ModelName": "gpt-5",
+  "ModelVersion": "2025-08-07",
+  "ModelCapacity": 50,
+  "EntraAppName": "Power BI MCP Gateway (Contoso)",
+  "ServerName": "Contoso Power BI",
+  "SkillsDir": "../skills",
+  "EngineImage": "ghcr.io/plainsightpro/powerbi-mcp-gateway:latest"
+}

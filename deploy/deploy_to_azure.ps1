@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the Plainsight Power BI MCP server as its own Azure application.
+    Deploys the Power BI MCP Gateway as its own Azure application.
 
 .DESCRIPTION
     Creates or updates, idempotently:
@@ -18,19 +18,30 @@
     roll a new image. Secrets never hit the console: the client secret goes straight into a Container
     App secret, and with -WriteLocalEnv also into the git-ignored .env next to the app.
 
+    One codebase, many deployments: every parameter can come from a JSON deployment profile
+    (-Profile), so a customer or internal deployment is a private folder with skills/ and
+    deploy/profile.json and nothing else. With -EngineImage the build does not compile this source
+    at all; it layers the skills on the published engine image (ghcr.io/plainsightpro/powerbi-mcp-gateway:<tag>),
+    which is how deployments upgrade: bump the tag, redeploy. Explicit arguments always win over
+    the profile.
+
 .EXAMPLE
-    .\deploy_to_azure.ps1
-    .\deploy_to_azure.ps1 -SkipFoundry -SkipBuild        # config-only update
-    .\deploy_to_azure.ps1 -PreauthorizeAzureCli -WriteLocalEnv   # enable scripts/smoke_test.py locally
+    .\deploy_to_azure.ps1 -AcrName <yourUniqueRegistry>                                   # example skills, source build
+    .\deploy_to_azure.ps1 -Profile C:\deployments\contoso\deploy\profile.json             # skills + names from the profile
+    .\deploy_to_azure.ps1 -Profile ...\profile.json -EngineImage ghcr.io/plainsightpro/powerbi-mcp-gateway:0.2.0
+    .\deploy_to_azure.ps1 -Profile ...\profile.json -SkipFoundry -SkipBuild               # config-only update
+    .\deploy_to_azure.ps1 -AcrName <yourUniqueRegistry> -PreauthorizeAzureCli -WriteLocalEnv
 #>
 [CmdletBinding()]
 param(
+    [string]$Profile = "",        # JSON file whose keys are these parameter names (see deploy/profiles/example.json)
+    [string]$EngineImage = "",    # published engine image to layer the skills on; empty = build this source
     [string]$Location = "swedencentral",
     [string]$ResourceGroup = "rg-powerbi-mcp",
     [string]$AppName = "ca-powerbi-mcp",
     [string]$EnvName = "env-powerbi-mcp",
     [string]$LogName = "log-powerbi-mcp",
-    [string]$AcrName = "acrplainsightpbimcp",   # registry names are global; the obvious one was taken
+    [string]$AcrName = "",        # globally unique, 5-50 alphanumerics; required here or in the profile
     [string]$FoundryName = "aif-powerbi-mcp",
     [string]$FoundryProject = "powerbi-mcp",
     [string]$ModelName = "gpt-5",
@@ -52,6 +63,28 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"   # az CLI streams build logs through cp1252 on Windows and dies on Unicode otherwise
 $appRoot = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'build_context.ps1')
+
+if ($Profile) {
+    # A deployment profile supplies defaults; anything passed explicitly on the command line wins.
+    $profilePath = (Resolve-Path -LiteralPath $Profile -ErrorAction Stop).Path
+    $profileDir = Split-Path $profilePath -Parent
+    $profileSettings = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+    foreach ($setting in $profileSettings.PSObject.Properties) {
+        if ($setting.Name -like '$*' -or $PSBoundParameters.ContainsKey($setting.Name)) { continue }
+        if (-not (Get-Variable -Name $setting.Name -Scope Script -ErrorAction SilentlyContinue)) {
+            throw "Profile '$profilePath' sets unknown parameter '$($setting.Name)'"
+        }
+        $value = $setting.Value
+        if ($setting.Name -eq 'SkillsDir' -and $value -and -not [IO.Path]::IsPathRooted($value)) {
+            $value = Join-Path $profileDir $value   # relative to the profile, so the folder is self-contained
+        }
+        Set-Variable -Name $setting.Name -Value $value -Scope Script
+    }
+    Write-Host "Deployment profile: $profilePath"
+}
+if ($AcrName -notmatch '^[a-zA-Z0-9]{5,50}$') {
+    throw "-AcrName (5-50 alphanumerics, globally unique) is required, on the command line or in the profile"
+}
 if (-not $SkillsDir) { $SkillsDir = Join-Path $appRoot 'skills' }
 # Validate before any Azure mutations, even for configuration-only deployments.
 $SkillsDir = (Resolve-Path -LiteralPath $SkillsDir -ErrorAction Stop).Path
@@ -195,7 +228,7 @@ if (-not $SkipFoundry) {
     $projectUri = "https://management.azure.com/subscriptions/$subscription/resourceGroups/$ResourceGroup/providers/Microsoft.CognitiveServices/accounts/$FoundryName/projects/$FoundryProject" + "?api-version=2025-06-01"
     $projectFile = New-TemporaryFile   # JSON through az.cmd loses its quotes; a file body survives
     (@{ location = $Location; identity = @{ type = "SystemAssigned" }
-        properties = @{ displayName = $FoundryProject; description = "Plainsight Power BI MCP: DAX generation" } } |
+        properties = @{ displayName = $FoundryProject; description = "Power BI MCP Gateway: DAX generation" } } |
         ConvertTo-Json -Depth 5) | Set-Content -Path $projectFile -Encoding utf8
     $projectOut = & az rest --method PUT --uri $projectUri --headers "Content-Type=application/json" --body "@$projectFile" 2>&1
     Remove-Item $projectFile -Force
@@ -222,10 +255,10 @@ if (-not (Invoke-AzQuiet acr show -n $AcrName --query name -o tsv)) {
 $acrServer = Invoke-Az acr show -n $AcrName --query loginServer -o tsv
 $image = "$acrServer/powerbi-mcp:$ImageTag"
 if (-not $SkipBuild) {
-    Step "Building $image (cloud build)"
+    Step "Building $image (cloud build$(if ($EngineImage) { ", skills on $EngineImage" } else { ', from source' }))"
     # --no-logs: az.cmd runs Python in isolated mode, so the cp1252 log streamer cannot be switched to
     # UTF-8 and crashes on the first non-ASCII byte in the build output. Queue, then poll the run.
-    $buildContext = New-GatewayBuildContext -AppRoot $appRoot -SkillsDir $SkillsDir
+    $buildContext = New-GatewayBuildContext -AppRoot $appRoot -SkillsDir $SkillsDir -EngineImage $EngineImage
     try {
         $queued = & $script:AzCli acr build --registry $AcrName --image "powerbi-mcp:$ImageTag" --image "powerbi-mcp:latest" `
             --file (Join-Path $buildContext "Dockerfile") --no-logs $buildContext 2>&1 | Out-String
@@ -312,6 +345,7 @@ Write-Host "  MCP endpoint : $baseUrl/mcp"
 Write-Host "  Health       : $baseUrl/healthz"
 Write-Host "  Entra app    : $EntraAppName ($appId)"
 Write-Host "  Foundry      : $foundryEndpoint  deployment $ModelName"
+Write-Host "  Image        : $image$(if ($EngineImage) { "  (engine $EngineImage + skills from $SkillsDir)" })"
 Write-Host ""
 Write-Host "Claude Code   : claude mcp add --transport http powerbi $baseUrl/mcp"
 Write-Host "Claude Desktop: Settings > Connectors > Add custom connector > URL $baseUrl/mcp (no client id needed)"

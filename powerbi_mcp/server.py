@@ -1,19 +1,23 @@
 """Power BI MCP Gateway.
 
 Auth: FastMCP's Azure OAuth proxy. MCP clients (Claude Code, Claude Desktop, claude.ai, VS Code,
-Cursor) register dynamically against this server; the server signs users in with Microsoft Entra
-and exchanges their token on-behalf-of for a Power BI / Fabric token per call. Nothing runs under a
-service identity, so Power BI's permissions and row-level security apply to every query.
+Cursor, ChatGPT, ...) register dynamically against this server; the server signs users in with
+Microsoft Entra and exchanges their token on-behalf-of for a Power BI / Fabric token per call.
+Nothing runs under a service identity, so Power BI's permissions and row-level security apply to
+every query.
 
 Execution: Microsoft's hosted Power BI MCP server (schema, DAX execution, report metadata) and the
-Fabric REST API (which models the user can open). DAX generation: a Foundry gpt-5 deployment,
-grounded in the model schema plus the skills folder (glossary, rules, recipes).
+Fabric REST API (which models the user can open). DAX generation: a Foundry (Azure OpenAI)
+deployment, grounded in the model schema plus the deployment's skills folder.
+
+The engine carries no domain vocabulary: tool names are generic, and every prompt, glossary entry,
+recipe and catalog row comes from the skills folder the deployment was built with.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -61,13 +65,33 @@ def _as_tool_error(exc: Exception) -> ToolError:
     if isinstance(exc, FabricAccessError):
         return ToolError(
             "Power BI refused the request for the signed-in user. They need Build permission on the "
-            f"semantic model and a Premium Per User license. Details: {exc}"
+            "semantic model and a license appropriate to its workspace (Premium Per User for a PPU "
+            f"workspace, or the applicable Power BI license on Fabric/Premium capacity). Details: {exc}"
         )
     if isinstance(exc, HostedMcpError):
         detail = f" (code {exc.code})" if exc.code else ""
         data = f" {exc.data}" if exc.data else ""
         return ToolError(f"Power BI MCP error{detail}: {exc}{data}")
     return ToolError(f"{type(exc).__name__}: {exc}")
+
+
+def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
+    """One MCP prompt per recipe file. Name, title and body all come from the skills folder."""
+    title = skills.recipe_title(name)
+
+    def recipe_prompt(model_id: str = "", period: str = "") -> str:
+        model_hint = model_id or "the model this recipe names (confirm its id with list_semantic_models)"
+        period_hint = period or "the period the user asked for"
+        return (
+            f"Follow the recipe '{title}' on semantic model {model_hint} for {period_hint}. "
+            "Run its steps in order with execute_dax, adapting filters and period bounds to the model; "
+            "when a step fails, fix the query rather than skipping it. End with the answer structure "
+            "the recipe describes.\n\n" + skills.recipes[name]
+        )
+
+    recipe_prompt.__name__ = name.replace("-", "_")
+    recipe_prompt.__doc__ = title
+    return recipe_prompt
 
 
 def build_server(settings: Settings | None = None) -> FastMCP:
@@ -157,18 +181,17 @@ def build_server(settings: Settings | None = None) -> FastMCP:
             models_cache.set(user, rows)
         return rows if include_uncurated else [r for r in rows if r["curated"]]
 
-    @mcp.tool(name="get_finance_context")
-    def get_finance_context() -> str:
-        """The finance glossary: which measure answers which business question, sign
+    @mcp.tool(name="get_business_context")
+    def get_business_context() -> str:
+        """This deployment's business glossary: which measure answers which question, sign
         conventions, date tables, model traps, and the index of available recipes. Read it before
-        answering any finance question or writing DAX by hand."""
+        answering a business question or writing DAX by hand."""
         return skills.glossary.strip() + "\n\n## Recipes (use get_recipe)\n" + skills.recipe_index()
 
     @mcp.tool(name="get_recipe")
     def get_recipe(name: str) -> str:
-        """A tested, step-by-step recipe for a recurring analysis (for example
-        'indirect-cost-analysis' or 'ebitda-bridge'): the queries to run in order and how to read
-        them. Pass the recipe name from get_finance_context."""
+        """A step-by-step recipe for a recurring analysis defined by this deployment: the queries to
+        run in order and how to read them. Recipe names are listed by get_business_context."""
         recipe = skills.recipes.get(name.strip().lower())
         if recipe is None:
             raise ToolError(f"Unknown recipe '{name}'. Available:\n{skills.recipe_index()}")
@@ -219,10 +242,10 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         fabric_token: str = EntraOBOToken(fabric_scopes),
     ) -> dict:
         """Turn a business question into a DAX query for the given semantic model, grounded in the
-        model schema, the finance glossary and the house DAX rules (gpt-5 on Foundry). With
-        execute=true (default) the query is run as the signed-in user and the rows are returned with
-        the DAX and the assumptions made. Pass chat_history ([{role, content}]) for follow-up
-        questions so the query builds on the previous turn."""
+        model schema, this deployment's glossary and its DAX rules (a Foundry model writes the
+        query). With execute=true (default) the query runs as the signed-in user and the rows come
+        back with the DAX and the assumptions made. Pass chat_history ([{role, content}]) for
+        follow-up questions so the query builds on the previous turn."""
         schema = await fetch_schema(model_id, fabric_token)
         notes = catalog.notes_for(model_id)
         try:
@@ -280,28 +303,14 @@ def build_server(settings: Settings | None = None) -> FastMCP:
 
     # ---------------------------------------------------------------- prompts
 
-    def _recipe_prompt(name: str, model_hint: str, period: str) -> str:
-        recipe = skills.recipes.get(name, "")
-        return (
-            f"Follow this recipe on the Finance semantic model ({model_hint}) for {period}. "
-            "Start with list_semantic_models to confirm the model id, then run the recipe steps with "
-            "execute_dax, adapting the period bounds. End with the answer structure the recipe describes.\n\n"
-            + recipe
+    for recipe_name in skills.recipes:
+        mcp.prompt(name=recipe_name, description=skills.recipe_title(recipe_name))(
+            _recipe_prompt_factory(skills, recipe_name)
         )
-
-    @mcp.prompt(name="indirect-cost-analysis")
-    def indirect_cost_analysis(model_id: str = "", period: str = "the last 12 full months") -> str:
-        """Why are indirect costs growing, and what does it do to EBITDA?"""
-        return _recipe_prompt("indirect-cost-analysis", model_id or "pick the group Finance model", period)
-
-    @mcp.prompt(name="ebitda-bridge")
-    def ebitda_bridge(model_id: str = "", period: str = "this year versus last year") -> str:
-        """How did EBITDA move and which component explains the delta?"""
-        return _recipe_prompt("ebitda-bridge", model_id or "pick the group Finance model", period)
 
     # -------------------------------------------------------------- resources
 
-    @mcp.resource("skill://glossary", name="finance-glossary", mime_type="text/markdown")
+    @mcp.resource("skill://glossary", name="glossary", mime_type="text/markdown")
     def glossary_resource() -> str:
         return skills.glossary
 
