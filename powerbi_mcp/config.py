@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     foundry_max_output_tokens: int = 4000  # reasoning tokens count too; raise it if answers get cut off
     foundry_api_key: str | None = None  # optional; default is Entra (managed identity / az login)
 
+    # OAuth proxy state (registered clients, upstream and refresh tokens). Unset = encrypted files on
+    # the replica's disk, wiped by every deploy; set = one Azure Table reached with the app identity.
+    state_storage_account: str | None = None
+    state_table_name: str = "mcpoauth"
+
     # Behaviour
     catalog_cache_seconds: int = 300  # per user: which models they can open
     schema_cache_seconds: int = 600  # per user and model: the schema fed to generate_dax

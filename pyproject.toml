@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
     "aiohttp>=3.9",  # azure.identity.aio (OnBehalfOfCredential used by EntraOBOToken) needs it
+    "py-key-value-aio[azure-tables]>=0.4",  # durable OAuth proxy state (state_store.py); the base package comes with fastmcp
 ]
 
 [project.urls]

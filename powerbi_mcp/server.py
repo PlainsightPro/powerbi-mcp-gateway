@@ -26,6 +26,7 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth.providers.azure import AzureProvider, EntraOBOToken
+from key_value.aio.protocols import AsyncKeyValue
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -33,6 +34,7 @@ from .config import Settings, load_settings
 from .gateway import Gateway
 from .observability import ToolCallLogger, current_user_key
 from .skills import Skills
+from .state_store import build_client_storage
 
 
 def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
@@ -54,7 +56,11 @@ def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
     return recipe_prompt
 
 
-def build_server(settings: Settings | None = None, gateway: Gateway | None = None) -> FastMCP:
+def build_server(
+    settings: Settings | None = None,
+    gateway: Gateway | None = None,
+    client_storage: AsyncKeyValue | None = None,
+) -> FastMCP:
     settings = settings or load_settings()
     gateway = gateway or Gateway.from_settings(settings)
     skills = gateway.skills
@@ -70,6 +76,8 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         # Entra's v2 endpoint rejects an RFC 8707 `resource` parameter next to `scope`
         # (AADSTS9010010), so never forward the client's resource indicator upstream.
         forward_resource=False,
+        # None keeps FastMCP's encrypted on-disk store (lost on redeploy); see state_store.py.
+        client_storage=client_storage if client_storage is not None else build_client_storage(settings),
     )
 
     @asynccontextmanager
