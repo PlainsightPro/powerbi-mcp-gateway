@@ -1,9 +1,9 @@
 """What the MCP tools do, without MCP in the way.
 
 `Gateway` takes the signed-in user's key and Fabric token as plain values and owns the caches, the
-lazy Foundry client and the generate -> execute -> repair loop. Keeping FastMCP's request context
-and on-behalf-of token resolution out of this layer is what lets the tests drive every path with
-`httpx.MockTransport` and a stub Responses client.
+pooled HTTP clients, the lazy Foundry client and the generate -> execute -> repair loop. Keeping
+FastMCP's request context and on-behalf-of token resolution out of this layer is what lets the
+tests drive every path with `httpx.MockTransport` and a stub Responses client.
 """
 
 from __future__ import annotations
@@ -18,17 +18,32 @@ from fastmcp.exceptions import ToolError
 from .catalog import Catalog
 from .config import Settings
 from .dax_generator import DaxGenerator, compact_schema
-from .fabric import FabricAccessError, FabricClient
+from .fabric import TIMEOUT_SECONDS as FABRIC_TIMEOUT
+from .fabric import FabricAccessError, FabricClient, FabricThrottledError
+from .hosted_mcp import TIMEOUT_SECONDS as HOSTED_TIMEOUT
 from .hosted_mcp import HostedMcpError, HostedPowerBIMcp
 from .skills import Skills
 
 FOUNDRY_SCOPE = "https://cognitiveservices.azure.com/.default"
 
+ACCESS_REFUSED = (
+    "Power BI refused the request for the signed-in user. They need Build permission on the "
+    "semantic model and a license appropriate to its workspace (Premium Per User for a PPU "
+    "workspace, or the applicable Power BI license on Fabric/Premium capacity)."
+)
+
 
 class TtlCache:
-    def __init__(self, ttl_seconds: float) -> None:
+    """A small per-process cache: entries expire after `ttl_seconds`, and the cache never holds
+    more than `maxsize` entries (expired ones go first, then the oldest)."""
+
+    def __init__(self, ttl_seconds: float, maxsize: int = 1000) -> None:
         self._ttl = ttl_seconds
+        self._maxsize = maxsize
         self._items: dict[Any, tuple[float, Any]] = {}
+
+    def __len__(self) -> int:
+        return len(self._items)
 
     def get(self, key: Any) -> Any | None:
         hit = self._items.get(key)
@@ -41,18 +56,26 @@ class TtlCache:
         return value
 
     def set(self, key: Any, value: Any) -> None:
+        self._items.pop(key, None)
+        if len(self._items) >= self._maxsize:
+            now = time.monotonic()
+            for k in [k for k, (expires, _) in self._items.items() if expires < now]:
+                del self._items[k]
+            while len(self._items) >= self._maxsize:
+                del self._items[next(iter(self._items))]  # insertion order: the oldest entry
         self._items[key] = (time.monotonic() + self._ttl, value)
 
 
 def as_tool_error(exc: Exception) -> ToolError:
     """Every upstream failure becomes a readable error for the assistant and its user."""
     if isinstance(exc, FabricAccessError):
-        return ToolError(
-            "Power BI refused the request for the signed-in user. They need Build permission on the "
-            "semantic model and a license appropriate to its workspace (Premium Per User for a PPU "
-            f"workspace, or the applicable Power BI license on Fabric/Premium capacity). Details: {exc}"
-        )
+        return ToolError(f"{ACCESS_REFUSED} Details: {exc}")
+    if isinstance(exc, FabricThrottledError):
+        hint = f" Retry after {exc.retry_after:g} s." if exc.retry_after else " Retry in a minute."
+        return ToolError(f"Power BI is rate-limiting the signed-in user.{hint} Details: {exc}")
     if isinstance(exc, HostedMcpError):
+        if exc.code in (401, 403):
+            return ToolError(f"{ACCESS_REFUSED} Details: {exc}")
         detail = f" (code {exc.code})" if exc.code else ""
         data = f" {exc.data}" if exc.data else ""
         return ToolError(f"Power BI MCP error{detail}: {exc}{data}")
@@ -75,8 +98,8 @@ class Gateway:
         self.settings = settings
         self.skills = skills
         self.catalog = catalog
-        self._fabric_transport = fabric_transport
-        self._hosted_transport = hosted_transport
+        self._fabric_http = httpx.AsyncClient(timeout=FABRIC_TIMEOUT, transport=fabric_transport)
+        self._hosted_http = httpx.AsyncClient(timeout=HOSTED_TIMEOUT, transport=hosted_transport)
         self._generator_factory = generator_factory or self._foundry_generator
         self._generator: DaxGenerator | None = None
         self._models_cache = TtlCache(settings.catalog_cache_seconds)
@@ -88,13 +111,18 @@ class Gateway:
         catalog = Catalog.load(settings.skills_dir / "catalog.yaml")
         return cls(settings, skills, catalog)
 
+    async def aclose(self) -> None:
+        """Close the pooled HTTP clients (wired to the server's lifespan)."""
+        await self._fabric_http.aclose()
+        await self._hosted_http.aclose()
+
     # ------------------------------------------------------------ upstream clients
 
     def _fabric(self, token: str) -> FabricClient:
-        return FabricClient(token, self.settings.fabric_api_url, transport=self._fabric_transport)
+        return FabricClient(token, self.settings.fabric_api_url, client=self._fabric_http)
 
     def _hosted(self, token: str) -> HostedPowerBIMcp:
-        return HostedPowerBIMcp(token, self.settings.hosted_mcp_url, transport=self._hosted_transport)
+        return HostedPowerBIMcp(token, self.settings.hosted_mcp_url, client=self._hosted_http)
 
     def _foundry_generator(self) -> DaxGenerator:
         settings = self.settings
@@ -114,12 +142,19 @@ class Gateway:
             deployment=settings.foundry_deployment,
             rules=self.skills.dax_rules,
             reasoning_effort=settings.foundry_reasoning_effort,
+            max_output_tokens=settings.foundry_max_output_tokens,
         )
 
     def generator(self) -> DaxGenerator:
         if self._generator is None:
             self._generator = self._generator_factory()
         return self._generator
+
+    def _row_cap(self, max_rows: int | None) -> int:
+        """The row cap for one query: the caller's value, the deployment default, never above the limit."""
+        if max_rows is not None and max_rows < 1:
+            raise ToolError("max_rows must be a positive number.")
+        return min(max_rows or self.settings.default_max_rows, self.settings.max_rows_limit)
 
     # ----------------------------------------------------------------- skills
 
@@ -140,13 +175,10 @@ class Gateway:
     async def list_models(self, user_key: str, token: str, include_uncurated: bool = True) -> list[dict]:
         rows = self._models_cache.get(user_key)
         if rows is None:
-            client = self._fabric(token)
             try:
-                accessible = await client.list_accessible_models()
+                accessible = await self._fabric(token).list_accessible_models()
             except Exception as exc:
                 raise as_tool_error(exc) from exc
-            finally:
-                await client.aclose()
             rows = self.catalog.merge(accessible)
             self._models_cache.set(user_key, rows)
         return rows if include_uncurated else [r for r in rows if r["curated"]]
@@ -156,13 +188,10 @@ class Gateway:
         cached = self._schema_cache.get(key)
         if cached is not None:
             return cached
-        hosted = self._hosted(token)
         try:
-            schema = await hosted.get_schema(model_id)
+            schema = await self._hosted(token).get_schema(model_id)
         except Exception as exc:
             raise as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()
         self._schema_cache.set(key, schema)
         return schema
 
@@ -176,13 +205,11 @@ class Gateway:
     async def execute(self, token: str, model_id: str, dax_queries: list[str], max_rows: int | None = None) -> dict:
         if not dax_queries or len(dax_queries) > 4:
             raise ToolError("Pass between 1 and 4 DAX queries.")
-        hosted = self._hosted(token)
+        rows = self._row_cap(max_rows)
         try:
-            return await hosted.execute_query(model_id, dax_queries, max_rows or self.settings.default_max_rows)
+            return await self._hosted(token).execute_query(model_id, dax_queries, rows)
         except Exception as exc:
             raise as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()
 
     async def generate(
         self,
@@ -194,6 +221,7 @@ class Gateway:
         max_rows: int | None = None,
         chat_history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
+        rows = self._row_cap(max_rows)
         schema = await self.fetch_schema(user_key, token, model_id)
         notes = self.catalog.notes_for(model_id)
         glossary = self.skills.glossary
@@ -215,38 +243,29 @@ class Gateway:
 
         hosted = self._hosted(token)
         try:
-            rows = max_rows or self.settings.default_max_rows
+            run = await hosted.execute_query(model_id, [generated.dax], rows)
+        except Exception as first_exc:  # give the model one shot at fixing its own query
+            first_error = str(as_tool_error(first_exc))
             try:
-                run = await hosted.execute_query(model_id, [generated.dax], rows)
-            except Exception as first_exc:
-                first_error = str(as_tool_error(first_exc))
-                try:
-                    repaired = await self.generator().repair(
-                        question, schema, notes, glossary, generated.dax, first_error
-                    )
-                    run = await hosted.execute_query(model_id, [repaired.dax], rows)
-                except Exception as second_exc:
-                    result["execution_error"] = first_error
-                    result["repair_error"] = str(as_tool_error(second_exc))
-                    return result
-                result.update(
-                    {
-                        "dax": repaired.dax,
-                        "explanation": repaired.explanation,
-                        "assumptions": repaired.assumptions,
-                        "repaired_after": first_error,
-                    }
-                )
-            result["result"] = run.get("executionResult", run)
-        finally:
-            await hosted.aclose()
+                repaired = await self.generator().repair(question, schema, notes, glossary, generated.dax, first_error)
+                run = await hosted.execute_query(model_id, [repaired.dax], rows)
+            except Exception as second_exc:  # return both errors and the DAX for the client
+                result["execution_error"] = first_error
+                result["repair_error"] = str(as_tool_error(second_exc))
+                return result
+            result.update(
+                {
+                    "dax": repaired.dax,
+                    "explanation": repaired.explanation,
+                    "assumptions": repaired.assumptions,
+                    "repaired_after": first_error,
+                }
+            )
+        result["result"] = run.get("executionResult", run)
         return result
 
     async def report_metadata(self, token: str, report_id: str) -> Any:
-        hosted = self._hosted(token)
         try:
-            return await hosted.get_report_metadata(report_id)
+            return await self._hosted(token).get_report_metadata(report_id)
         except Exception as exc:
             raise as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()

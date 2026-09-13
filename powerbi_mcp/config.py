@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FABRIC_RESOURCE = "https://api.fabric.microsoft.com"
+DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
 class Settings(BaseSettings):
@@ -28,14 +30,17 @@ class Settings(BaseSettings):
     # Foundry (Azure OpenAI) used by generate_dax
     foundry_endpoint: str | None = None
     foundry_deployment: str = "gpt-5"
-    foundry_reasoning_effort: str = "low"
+    foundry_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "low"
+    foundry_max_output_tokens: int = 4000  # reasoning tokens count too; raise it if answers get cut off
     foundry_api_key: str | None = None  # optional; default is Entra (managed identity / az login)
 
     # Behaviour
-    catalog_cache_seconds: int = 300
-    schema_cache_seconds: int = 600
-    default_max_rows: int = 250
-    skills_dir: Path = Path(__file__).resolve().parent.parent / "skills"
+    catalog_cache_seconds: int = 300  # per user: which models they can open
+    schema_cache_seconds: int = 600  # per user and model: the schema fed to generate_dax
+    default_max_rows: int = 250  # rows per query when the client passes no max_rows
+    max_rows_limit: int = 10_000  # rows per query, whatever the client asks for
+    skills_dir: Path = DEFAULT_SKILLS_DIR
+    log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
 

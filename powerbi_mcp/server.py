@@ -19,24 +19,20 @@ takes the user key and the Fabric token as plain values so it can be tested with
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth.providers.azure import AzureProvider, EntraOBOToken
-from fastmcp.server.dependencies import get_access_token
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .config import Settings, load_settings
 from .gateway import Gateway
+from .observability import ToolCallLogger, current_user_key
 from .skills import Skills
-
-
-def _current_user_key() -> str:
-    token = get_access_token()
-    claims = getattr(token, "claims", None) or {}
-    return claims.get("oid") or claims.get("sub") or claims.get("preferred_username") or "anonymous"
 
 
 def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
@@ -76,7 +72,15 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         forward_resource=False,
     )
 
-    mcp = FastMCP(name=settings.server_name, instructions=skills.instructions, auth=auth)
+    @asynccontextmanager
+    async def lifespan(_: FastMCP) -> AsyncIterator[dict]:
+        try:
+            yield {}
+        finally:
+            await gateway.aclose()
+
+    mcp = FastMCP(name=settings.server_name, instructions=skills.instructions, auth=auth, lifespan=lifespan)
+    mcp.add_middleware(ToolCallLogger())
     fabric_scopes = [settings.fabric_scope]
 
     # ------------------------------------------------------------------ tools
@@ -90,7 +94,7 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         the returned `id` in every other tool; never guess or recall a model id. Curated models come
         first with their description, data scope, default date table, key measures and recipes.
         Set include_uncurated=false to see only the curated models."""
-        return await gateway.list_models(_current_user_key(), fabric_token, include_uncurated)
+        return await gateway.list_models(current_user_key(), fabric_token, include_uncurated)
 
     @mcp.tool(name="get_business_context")
     def get_business_context() -> str:
@@ -114,7 +118,7 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         """Tables, columns, measures (with descriptions) and relationships of one semantic model,
         plus the curated notes for it. Large: fetch once per model per conversation. compact=true
         returns a readable text block; compact=false returns the raw JSON."""
-        return await gateway.schema(_current_user_key(), fabric_token, model_id, compact)
+        return await gateway.schema(current_user_key(), fabric_token, model_id, compact)
 
     @mcp.tool(name="execute_dax")
     async def execute_dax(
@@ -143,7 +147,7 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         back with the DAX and the assumptions made. Pass chat_history ([{role, content}]) for
         follow-up questions so the query builds on the previous turn."""
         return await gateway.generate(
-            _current_user_key(), fabric_token, model_id, question, execute, max_rows, chat_history
+            current_user_key(), fabric_token, model_id, question, execute, max_rows, chat_history
         )
 
     @mcp.tool(name="get_report_metadata")
@@ -179,7 +183,10 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
 
     @mcp.resource("skill://recipes/{name}", name="recipe", mime_type="text/markdown")
     def recipe_resource(name: str) -> str:
-        return skills.recipes.get(name, f"Unknown recipe '{name}'. Available:\n{skills.recipe_index()}")
+        recipe = skills.recipes.get(name.strip().lower())
+        if recipe is None:
+            raise ResourceError(f"Unknown recipe '{name}'. Available:\n{skills.recipe_index()}")
+        return recipe
 
     # ------------------------------------------------------------ health probe
 

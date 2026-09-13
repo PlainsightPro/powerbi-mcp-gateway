@@ -62,6 +62,15 @@ def test_validate_dax_rejects_multiple_evaluates_and_ddl():
         validate_dax("DEFINE TABLE t = ROW(1) EVALUATE t")
 
 
+def test_validate_dax_matches_whole_words_only():
+    validate_dax('EVALUATE ROW("x", [Reevaluated Score])')  # a name merely containing the letters is fine
+    validate_dax('EVALUATE ROW("s", "re-evaluated")')
+    with pytest.raises(ValueError, match="DEFINE TABLE"):
+        validate_dax("DEFINE   TABLE t = ROW(1) EVALUATE t")  # any whitespace between the keywords
+    with pytest.raises(ValueError, match="DEFINE COLUMN"):
+        validate_dax("define column 'T'[c] = 1 evaluate 'T'")  # case-insensitive
+
+
 class StubResponses:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -114,5 +123,23 @@ def test_prompt_carries_engine_rules_for_formatted_values_and_future_dates():
     and date tables can extend past today. The engine states both; skills need not."""
     gen = DaxGenerator(StubResponses(), deployment="gpt-5", rules="- rules", reasoning_effort="low")
     instructions, _ = gen.build_prompt("q", "schema", "", "glossary")
-    assert "+ 0" in instructions and "format string" in instructions
+    assert "+ 0" in instructions and "format string" in instructions and "alias" in instructions
     assert "future-dated" in instructions and "TODAY()" in instructions
+
+
+async def test_truncated_model_answer_is_reported_as_such():
+    class Truncating:
+        async def create(self, **kwargs):
+            details = SimpleNamespace(reason="max_output_tokens")
+            return SimpleNamespace(status="incomplete", incomplete_details=details, output_text='{"dax": "EVAL')
+
+    gen = DaxGenerator(Truncating(), deployment="gpt-5", rules="- rules", reasoning_effort="low", max_output_tokens=123)
+    with pytest.raises(ValueError, match=r"cut off \(max_output_tokens\) at max_output_tokens=123"):
+        await gen.generate("q", SCHEMA, "", "glossary")
+
+
+async def test_max_output_tokens_is_passed_to_the_model():
+    stub = StubResponses()
+    gen = DaxGenerator(stub, deployment="gpt-5", rules="- rules", reasoning_effort="low", max_output_tokens=777)
+    await gen.generate("q", SCHEMA, "", "glossary")
+    assert stub.calls[0]["max_output_tokens"] == 777

@@ -22,6 +22,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyright
       - run: uv run pytest -q
+      - run: uv run python -m powerbi_mcp --check-skills skills
 
   image:
     runs-on: ubuntu-latest

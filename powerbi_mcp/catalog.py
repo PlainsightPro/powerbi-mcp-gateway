@@ -2,28 +2,28 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .fabric import SemanticModelRef
 
 
-@dataclass
-class CatalogEntry:
+class CatalogEntry(BaseModel):
+    """One curated model. Unknown keys are an error, so a typo cannot silently drop a field."""
+
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
     workspace: str
     description: str = ""
     data_scope: str = ""
     default_date_table: str = ""
-    key_measures: list[str] = field(default_factory=list)
-    recipes: list[str] = field(default_factory=list)
+    key_measures: list[str] = []
+    recipes: list[str] = []
     notes: str = ""
-
-
-_ENTRY_FIELDS = {f.name for f in fields(CatalogEntry)}
 
 
 class Catalog:
@@ -33,9 +33,18 @@ class Catalog:
     @classmethod
     def load(cls, path: Path) -> Catalog:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        entries = [
-            CatalogEntry(**{k: v for k, v in item.items() if k in _ENTRY_FIELDS}) for item in raw.get("models", [])
-        ]
+        if not isinstance(raw, dict) or not isinstance(raw.get("models", []), list):
+            raise ValueError(f"{path}: expected a mapping with a 'models' list")
+        entries: list[CatalogEntry] = []
+        for index, item in enumerate(raw.get("models") or [], start=1):
+            label = (item.get("name") or item.get("id") or "?") if isinstance(item, dict) else "?"
+            try:
+                entries.append(CatalogEntry.model_validate(item))
+            except ValidationError as exc:
+                problems = "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc']) or 'entry'}: {e['msg']}" for e in exc.errors()
+                )
+                raise ValueError(f"{path}: model #{index} ({label}): {problems}") from None
         return cls(entries)
 
     @property

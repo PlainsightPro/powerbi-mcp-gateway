@@ -101,21 +101,34 @@ def parse_generation(raw: str) -> GeneratedDax:
     return GeneratedDax(dax=dax, explanation="", assumptions=[], raw=raw)
 
 
+_EVALUATE = re.compile(r"\bEVALUATE\b", re.IGNORECASE)
+_QUERY_DDL = re.compile(r"\bDEFINE\s+(TABLE|COLUMN)\b", re.IGNORECASE)
+
+
 def validate_dax(dax: str) -> None:
-    upper = dax.upper()
-    if upper.count("EVALUATE") != 1:
+    """The constraints the hosted server enforces on a query, checked before it is sent: exactly
+    one EVALUATE statement (a measure or string containing the word does not count), and no
+    query-scoped DEFINE TABLE / DEFINE COLUMN."""
+    if len(_EVALUATE.findall(dax)) != 1:
         raise ValueError("generated DAX must contain exactly one EVALUATE statement")
-    for banned in ("DEFINE TABLE", "DEFINE COLUMN"):  # query-scoped DDL the hosted server rejects
-        if banned in upper:
-            raise ValueError(f"generated DAX uses unsupported '{banned}'")
+    if match := _QUERY_DDL.search(dax):
+        raise ValueError(f"generated DAX uses unsupported 'DEFINE {match.group(1).upper()}'")
 
 
 class DaxGenerator:
-    def __init__(self, client: ResponsesClient, deployment: str, rules: str, reasoning_effort: str = "low") -> None:
+    def __init__(
+        self,
+        client: ResponsesClient,
+        deployment: str,
+        rules: str,
+        reasoning_effort: str = "low",
+        max_output_tokens: int = 4000,
+    ) -> None:
         self._client = client
         self._deployment = deployment
         self._rules = rules
         self._effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
 
     def build_prompt(
         self, question: str, schema_text: str, model_notes: str, glossary: str, chat_history: list[dict] | None = None
@@ -124,9 +137,10 @@ class DaxGenerator:
             "You write DAX queries for Power BI semantic models. Answer only with the JSON object requested. "
             "Use existing measures whenever one answers the question; never re-aggregate a column that a measure already covers.\n"
             "The query engine applies a measure's or column's format string to typed results, so a measure can come "
-            "back as text such as '1,729,015 EUR' or '81.11%'. The rows are consumed by a program: add + 0 to every "
-            'numeric measure or aggregate in the output columns ("Revenue", [Revenue] + 0) so the value is a number; '
-            "leave text and date measures as they are.\n"
+            "back as text such as '1,729,015 EUR' or '81.11%'. The rows are consumed by a program, so for every "
+            "numeric measure in the output columns do both: add + 0 and give the column an alias that is not the "
+            'name of any measure ("Revenue EUR", [Revenue] + 0, never "Revenue", [Revenue]). Leave text and date '
+            "measures as they are.\n"
             "Never assume the date table ends at the current month: models can hold future-dated rows. Bound relative "
             "periods such as 'last 6 months' or 'year to date' by today's date (TODAY(), or a month-offset column when "
             "the model has one), never by the maximum of the date table.\n\n"
@@ -155,9 +169,17 @@ class DaxGenerator:
             instructions=instructions,
             input=user,
             reasoning={"effort": self._effort},
-            max_output_tokens=4000,
+            max_output_tokens=self._max_output_tokens,
             text={"format": {"type": "json_schema", "name": "dax_query", "strict": True, "schema": DAX_OUTPUT_SCHEMA}},
         )
+        if getattr(response, "status", None) == "incomplete":
+            details = getattr(response, "incomplete_details", None)
+            reason = getattr(details, "reason", None) or "unknown reason"
+            raise ValueError(
+                f"the model's answer was cut off ({reason}) at max_output_tokens={self._max_output_tokens}; "
+                "reasoning tokens count against it, so simplify the question or raise "
+                "PBIMCP_FOUNDRY_MAX_OUTPUT_TOKENS"
+            )
         raw = getattr(response, "output_text", None) or str(response)
         result = parse_generation(raw)
         validate_dax(result.dax)
