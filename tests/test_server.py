@@ -15,6 +15,9 @@ EXPECTED_TOOLS = {
     "execute_dax",
     "generate_dax",
     "get_report_metadata",
+    "recall",
+    "remember",
+    "forget",
 }
 
 

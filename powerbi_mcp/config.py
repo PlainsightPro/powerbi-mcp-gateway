@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FABRIC_RESOURCE = "https://api.fabric.microsoft.com"
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+DEFAULT_MEMORY_DIR = Path(__file__).resolve().parent.parent / ".memories"  # git-ignored; /data/memories in the image
 
 
 class Settings(BaseSettings):
@@ -38,6 +39,14 @@ class Settings(BaseSettings):
     # the replica's disk, wiped by every deploy; set = one Azure Table reached with the app identity.
     state_storage_account: str | None = None
     state_table_name: str = "mcpoauth"
+
+    # Memories: notes users attach to one semantic model, visible only to people who can open that
+    # model (memory.py). Stored next to the OAuth state when a storage account is set, else as JSON
+    # files under memory_dir. The caps keep one model's record under Azure Tables' 64 KB limit.
+    memory_dir: Path = DEFAULT_MEMORY_DIR
+    memory_table_name: str = "mcpmemories"
+    memory_max_per_model: int = 50
+    memory_max_chars: int = 500
 
     # Behaviour
     catalog_cache_seconds: int = 300  # per user: which models they can open

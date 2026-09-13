@@ -3,8 +3,10 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy UV_NO_CACHE=1 \
-    # FastMCP keeps the OAuth proxy's on-disk state under this folder (see docs/administration.md)
-    FASTMCP_HOME=/data/fastmcp
+    # FastMCP keeps the OAuth proxy's on-disk state under this folder (see docs/administration.md);
+    # memories land next to it unless PBIMCP_STATE_STORAGE_ACCOUNT moves both to a storage account
+    FASTMCP_HOME=/data/fastmcp \
+    PBIMCP_MEMORY_DIR=/data/memories
 WORKDIR /app
 
 # Dependencies first (layer cached until the lock changes), then the package itself.

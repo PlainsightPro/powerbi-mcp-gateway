@@ -18,7 +18,16 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 logger = logging.getLogger("powerbi_mcp.tools")
 
 # Arguments whose *value* is safe to log; everything else appears as a count or not at all.
-_LOGGED_ARGUMENTS = ("model_id", "report_id", "name", "include_uncurated", "compact", "execute", "max_rows")
+_LOGGED_ARGUMENTS = (
+    "model_id",
+    "report_id",
+    "memory_id",
+    "name",
+    "include_uncurated",
+    "compact",
+    "execute",
+    "max_rows",
+)
 _ERROR_EXCERPT = 500
 
 

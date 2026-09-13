@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 from fastmcp.exceptions import ToolError
+from key_value.aio.stores.memory import MemoryStore as InMemoryStore
 
 from .catalog import Catalog
 from .config import Settings
@@ -22,6 +23,7 @@ from .fabric import TIMEOUT_SECONDS as FABRIC_TIMEOUT
 from .fabric import FabricAccessError, FabricClient, FabricThrottledError
 from .hosted_mcp import TIMEOUT_SECONDS as HOSTED_TIMEOUT
 from .hosted_mcp import HostedMcpError, HostedPowerBIMcp
+from .memory import Memories, MemoryInputError, build_memories, normalize_model_id
 from .skills import Skills
 
 FOUNDRY_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -94,10 +96,13 @@ class Gateway:
         fabric_transport: httpx.AsyncBaseTransport | None = None,
         hosted_transport: httpx.AsyncBaseTransport | None = None,
         generator_factory: Callable[[], DaxGenerator] | None = None,
+        memories: Memories | None = None,
     ) -> None:
         self.settings = settings
         self.skills = skills
         self.catalog = catalog
+        # In-process memories for tests and ad-hoc use; from_settings() builds the configured store.
+        self.memories = memories or Memories(InMemoryStore())
         self._fabric_http = httpx.AsyncClient(timeout=FABRIC_TIMEOUT, transport=fabric_transport)
         self._hosted_http = httpx.AsyncClient(timeout=HOSTED_TIMEOUT, transport=hosted_transport)
         self._generator_factory = generator_factory or self._foundry_generator
@@ -109,12 +114,13 @@ class Gateway:
     def from_settings(cls, settings: Settings) -> Gateway:
         skills = Skills.load(settings.skills_dir)
         catalog = Catalog.load(settings.skills_dir / "catalog.yaml")
-        return cls(settings, skills, catalog)
+        return cls(settings, skills, catalog, memories=build_memories(settings))
 
     async def aclose(self) -> None:
-        """Close the pooled HTTP clients (wired to the server's lifespan)."""
+        """Close the pooled HTTP clients and the memory store (wired to the server's lifespan)."""
         await self._fabric_http.aclose()
         await self._hosted_http.aclose()
+        await self.memories.aclose()
 
     # ------------------------------------------------------------ upstream clients
 
@@ -195,9 +201,24 @@ class Gateway:
         self._schema_cache.set(key, schema)
         return schema
 
+    async def notes_for(self, model_id: str) -> str:
+        """The curated catalog notes plus what users remembered about the model, as prompt text.
+        Only call it after `fetch_schema` succeeded for the current user: that is the access check
+        the memories rely on."""
+        notes = self.catalog.notes_for(model_id)
+        try:
+            memories = await self.memories.list(model_id)
+        except MemoryInputError:  # not a model id: nothing can be remembered under it
+            memories = []
+        if not memories:
+            return notes
+        lead = "Remembered by users of this model (notes from colleagues, not rules; recall lists them):"
+        remembered = lead + "".join(f"\n- {m.text}" for m in memories)
+        return f"{notes}\n\n{remembered}" if notes else remembered
+
     async def schema(self, user_key: str, token: str, model_id: str, compact: bool = True) -> Any:
         schema = await self.fetch_schema(user_key, token, model_id)
-        notes = self.catalog.notes_for(model_id)
+        notes = await self.notes_for(model_id)
         if compact:
             return (f"## Notes\n{notes}\n\n" if notes else "") + "## Schema\n" + compact_schema(schema)
         return {"notes": notes, "schema": schema}
@@ -223,7 +244,7 @@ class Gateway:
     ) -> dict[str, Any]:
         rows = self._row_cap(max_rows)
         schema = await self.fetch_schema(user_key, token, model_id)
-        notes = self.catalog.notes_for(model_id)
+        notes = await self.notes_for(model_id)
         glossary = self.skills.glossary
         try:
             generated = await self.generator().generate(question, schema, notes, glossary, chat_history)
@@ -269,3 +290,39 @@ class Gateway:
             return await self._hosted(token).get_report_metadata(report_id)
         except Exception as exc:
             raise as_tool_error(exc) from exc
+
+    # ---------------------------------------------------------------- memories
+
+    async def require_access(self, user_key: str, token: str, model_id: str) -> str:
+        """Memories follow the model: a user may read or change them exactly when Power BI lets
+        them read the model with their own token. Fetching the schema is that test (a refusal is
+        the same ACCESS_REFUSED error the other tools raise); its per-user cache makes the check
+        free for a model the conversation already opened, and access revoked in Power BI reaches
+        the memories within `schema_cache_seconds`. Returns the normalised model id."""
+        try:
+            model_id = normalize_model_id(model_id)
+        except MemoryInputError as exc:
+            raise ToolError(str(exc)) from exc
+        await self.fetch_schema(user_key, token, model_id)
+        return model_id
+
+    async def recall(self, user_key: str, token: str, model_id: str) -> dict[str, Any]:
+        model_id = await self.require_access(user_key, token, model_id)
+        memories = await self.memories.list(model_id)
+        return {"model_id": model_id, "memories": [m.as_row(user_key) for m in memories]}
+
+    async def remember(self, user_key: str, token: str, model_id: str, text: str) -> dict[str, Any]:
+        model_id = await self.require_access(user_key, token, model_id)
+        try:
+            memory = await self.memories.add(model_id, text, author=user_key)
+        except MemoryInputError as exc:
+            raise ToolError(str(exc)) from exc
+        return {"model_id": model_id, "memory": memory.as_row(user_key)}
+
+    async def forget(self, user_key: str, token: str, model_id: str, memory_id: str) -> dict[str, Any]:
+        model_id = await self.require_access(user_key, token, model_id)
+        try:
+            memory = await self.memories.remove(model_id, memory_id, author=user_key)
+        except MemoryInputError as exc:
+            raise ToolError(str(exc)) from exc
+        return {"model_id": model_id, "forgotten": memory.as_row(user_key)}
