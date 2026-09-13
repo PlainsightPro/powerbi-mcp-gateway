@@ -139,8 +139,9 @@ class DaxGenerator:
             "The query engine applies a measure's or column's format string to typed results, so a measure can come "
             "back as text such as '1,729,015 EUR' or '81.11%'. The rows are consumed by a program, so for every "
             "numeric measure in the output columns do both: add + 0 and give the column an alias that is not the "
-            'name of any measure ("Revenue EUR", [Revenue] + 0, never "Revenue", [Revenue]). Leave text and date '
-            "measures as they are.\n"
+            'name of any measure ("Revenue EUR", [Revenue] + 0, never "Revenue", [Revenue]); counts too '
+            '("Won Deals Count", [# Won Deals] + 0). Before answering, compare every output alias with the measure '
+            "names in the schema and rename any that match. Leave text and date measures as they are.\n"
             "Never assume the date table ends at the current month: models can hold future-dated rows. Bound relative "
             "periods such as 'last 6 months' or 'year to date' by today's date (TODAY(), or a month-offset column when "
             "the model has one), never by the maximum of the date table.\n\n"
