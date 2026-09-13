@@ -9,26 +9,24 @@ SCHEMA = {
     "schema": {
         "Tables": [
             {
-                "Name": "GL Account",
+                "Name": "Product",
                 "Measures": [
-                    {"Name": "Gross Margin", "Type": "Double"},
+                    {"Name": "Units", "Type": "Int64"},
                     {
-                        "Name": "Indirect Cost",
-                        "Description": "Indirect overhead cost as a positive amount.",
+                        "Name": "Return Rate",
+                        "Description": "Returned units over units sold, a fraction.",
                         "Type": "Double",
                     },
                 ],
-                "Columns": [{"Name": "GL Account Code", "Type": "Text", "FormatString": "0"}],
+                "Columns": [{"Name": "Product Code", "Type": "Text", "FormatString": "0"}],
             },
             {
-                "Name": "P&L View",
+                "Name": "Season Selector",
                 "Description": "Disconnected selector.",
-                "Columns": [{"Name": "P&L View", "Type": "Text"}],
+                "Columns": [{"Name": "Season", "Type": "Text"}],
             },
         ],
-        "ActiveRelationships": [
-            {"PK": "'GL Account'[GL Account Code]", "FK": "'Financial Transaction'[glAccountCode]"}
-        ],
+        "ActiveRelationships": [{"PK": "'Product'[Product Code]", "FK": "'Sales'[productCode]"}],
         "CalculationGroups": [{"Name": "Time Intelligence"}],
     }
 }
@@ -36,13 +34,10 @@ SCHEMA = {
 
 def test_compact_schema_keeps_names_descriptions_relationships_and_drops_format_strings():
     text = compact_schema(SCHEMA)
-    assert "TABLE 'GL Account'" in text
-    assert "measure [Indirect Cost] : Double  -- Indirect overhead cost as a positive amount." in text
-    assert "TABLE 'P&L View'  -- Disconnected selector." in text
-    assert (
-        "ACTIVERELATIONSHIPS:" in text
-        and "'GL Account'[GL Account Code] -> 'Financial Transaction'[glAccountCode]" in text
-    )
+    assert "TABLE 'Product'" in text
+    assert "measure [Return Rate] : Double  -- Returned units over units sold, a fraction." in text
+    assert "TABLE 'Season Selector'  -- Disconnected selector." in text
+    assert "ACTIVERELATIONSHIPS:" in text and "'Product'[Product Code] -> 'Sales'[productCode]" in text
     assert "CALCULATION GROUP 'Time Intelligence'" in text
     assert "FormatString" not in text
 
@@ -80,8 +75,8 @@ class StubResponses:
         return SimpleNamespace(
             output_text=json.dumps(
                 {
-                    "dax": "EVALUATE SUMMARIZECOLUMNS('GL Account'[GL Account Code], \"Cost\", [Indirect Cost])",
-                    "explanation": "uses the positive indirect cost measure",
+                    "dax": "EVALUATE SUMMARIZECOLUMNS('Product'[Product Code], \"Rate\", [Return Rate])",
+                    "explanation": "uses the model's return-rate measure",
                     "assumptions": ["current year"],
                 }
             )
@@ -92,9 +87,9 @@ async def test_generator_builds_grounded_prompt_and_returns_dax():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- one EVALUATE", reasoning_effort="low")
     out = await gen.generate(
-        "waarom stijgen de indirecte kosten",
+        "which products are returned most often",
         SCHEMA,
-        "Model: Finance",
+        "Model: Contoso Sales",
         "Glossary text",
         chat_history=[{"role": "user", "content": "earlier question"}],
     )
@@ -102,8 +97,8 @@ async def test_generator_builds_grounded_prompt_and_returns_dax():
     call = stub.calls[0]
     assert call["model"] == "gpt-5" and call["reasoning"] == {"effort": "low"}
     assert "- one EVALUATE" in call["instructions"] and "Glossary text" in call["instructions"]
-    assert "Model: Finance" in call["input"] and "TABLE 'GL Account'" in call["input"]
-    assert "earlier question" in call["input"] and "waarom stijgen" in call["input"]
+    assert "Model: Contoso Sales" in call["input"] and "TABLE 'Product'" in call["input"]
+    assert "earlier question" in call["input"] and "returned most often" in call["input"]
     assert call["text"]["format"]["type"] == "json_schema"
 
 
@@ -111,7 +106,12 @@ async def test_repair_feeds_back_the_failed_query_and_engine_error():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- rules", reasoning_effort="low")
     out = await gen.repair(
-        "vraag", SCHEMA, "notes", "glossary", failed_dax="EVALUATE ROW(1']", error="The syntax for ']' is incorrect."
+        "return rate by product",
+        SCHEMA,
+        "notes",
+        "glossary",
+        failed_dax="EVALUATE ROW(1']",
+        error="The syntax for ']' is incorrect.",
     )
     assert out.dax.startswith("EVALUATE")
     user = stub.calls[0]["input"]

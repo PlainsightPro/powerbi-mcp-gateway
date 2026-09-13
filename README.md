@@ -63,6 +63,7 @@ Gateway  (Azure Container Apps)                          FastMCP + Azure OAuth p
 | `execute_dax` | Run 1 to 4 DAX queries as the user (default 250 rows) |
 | `generate_dax` | Question to DAX, optionally executed; returns DAX, explanation, assumptions, rows |
 | `get_report_metadata` | Pages, visuals and filters of a report the user can open |
+| `recall` / `remember` / `forget` | Notes users attach to one model (a correction, a trap, the measure for a recurring question). They follow the model: visible and writable only to people Power BI lets open it, and folded into the schema notes and `generate_dax` grounding |
 
 Prompts: one per recipe in the skills folder. Resources: `skill://glossary`, `skill://dax-rules`,
 `skill://catalog`, `skill://recipes/{name}`. The tool contract is in
@@ -120,8 +121,9 @@ are in [docs/](docs/README.md). In short:
 claude mcp add --transport http powerbi https://<host>/mcp      # then /mcp and sign in
 ```
 
-Claude Desktop, claude.ai, ChatGPT: add a custom connector with the URL, no client id. VS Code and
-Cursor: `{"type": "http", "url": "https://<host>/mcp"}` in the MCP settings file.
+Claude Desktop, claude.ai, ChatGPT: add a custom connector with the URL, no client id. VS Code:
+`{"type": "http", "url": "https://<host>/mcp"}` in `mcp.json`; Cursor: `{"url": "https://<host>/mcp"}`
+under `mcpServers`.
 
 ## Local development
 
@@ -137,16 +139,17 @@ local server runs the full sign-in. `az login` supplies the Foundry credential l
 signed-in user needs the Cognitive Services OpenAI User role on the Foundry resource, or set
 `PBIMCP_FOUNDRY_API_KEY` for the session.
 
-Two checks exist: `scripts/smoke_test.py` runs the token exchange, catalog, schema, query and DAX
-generation headlessly with the Azure CLI identity (the deploy script's `-PreauthorizeAzureCli`
-enables it), and `scripts/check_gateway.py https://<host>/mcp` verifies a deployed gateway through
-the real browser sign-in.
+Three checks exist: `python -m powerbi_mcp --check-skills <folder>` validates a skills folder
+offline, `scripts/smoke_test.py` runs the token exchange, catalog, schema, query and DAX generation
+headlessly with the Azure CLI identity (the deploy script's `-PreauthorizeAzureCli` enables it), and
+`scripts/check_gateway.py https://<host>/mcp` verifies a deployed gateway through the real browser
+sign-in.
 
 ## Known limits
 
-- The OAuth proxy keeps client registrations and encrypted upstream tokens on the replica's disk;
-  a redeploy means clients sign in again, and the app runs one replica. Add a `client_storage`
-  backend before scaling out.
+- The app runs one replica. Its OAuth state (client registrations, encrypted tokens) lives in an
+  Azure Table, so a redeploy keeps users signed in; scaling out additionally needs
+  `stateless_http=True` on the server (MCP sessions are per replica).
 - Skills are deployment-wide, not filtered by the user's permissions; separate deployments for
   groups that must not share business knowledge.
 - `generate_dax` returns one query per call; multi-step analyses follow recipes.

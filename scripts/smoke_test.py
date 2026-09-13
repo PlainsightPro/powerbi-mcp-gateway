@@ -5,10 +5,11 @@ Exercises the exact code paths the MCP tools use, with a real user token but wit
   2. On-behalf-of exchange to a Fabric token             -> same code path as EntraOBOToken
   3. Fabric REST: which semantic models the user can open
   4. Hosted Power BI MCP: schema + a probe query on the first curated model
-  5. Foundry gpt-5: generate DAX for a finance question and execute it
+  5. Foundry gpt-5: generate DAX for a question about the chosen model and execute it
 
 Run from the app folder with a .env holding PBIMCP_* (client secret included):
-    .venv/Scripts/python.exe scripts/smoke_test.py ["your question"]
+    uv run python scripts/smoke_test.py ["your question"] [--model <curated model name>]
+Without a question, one is built from the model's first key measure.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def az_token(resource: str) -> str:
     return out.stdout.strip()
 
 
-async def main(question: str) -> None:
+async def main(question: str | None, model_name: str | None) -> None:
     settings = load_settings()
     skills = Skills.load(settings.skills_dir)
     catalog = Catalog.load(settings.skills_dir / "catalog.yaml")
@@ -75,7 +76,17 @@ async def main(question: str) -> None:
     ok("3 accessible models", f"{len(rows)} total, {len(curated)} curated: " + ", ".join(r["name"] for r in curated))
     if not curated:
         raise SystemExit("no curated model is accessible for this user; stopping")
-    model = next((r for r in curated if r["name"] == "Finance"), curated[0])
+    if model_name:
+        model = next((r for r in curated if r["name"].lower() == model_name.lower()), None)
+        if model is None:
+            raise SystemExit(f"no curated model named '{model_name}' is accessible; see the list above")
+    else:
+        model = curated[0]
+    if not question:
+        # A question the chosen model can answer, built from its own catalog entry: no domain term in this script.
+        measure = (model.get("key_measures") or ["the main measure"])[0]
+        question = f"{measure} per month this year"
+    print(f"      model '{model['name']}', question: {question}")
 
     hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
     try:
@@ -124,5 +135,12 @@ async def main(question: str) -> None:
 
 
 if __name__ == "__main__":
-    q = sys.argv[1] if len(sys.argv) > 1 else "Indirect cost per month this year with its share of revenue"
-    asyncio.run(main(q))
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "question", nargs="?", help="the question to turn into DAX (default: from the model's first key measure)"
+    )
+    parser.add_argument("--model", help="name of the curated model to use (default: the first accessible one)")
+    args = parser.parse_args()
+    asyncio.run(main(args.question, args.model))

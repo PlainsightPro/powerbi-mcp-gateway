@@ -14,6 +14,7 @@ The content below describes a fictional company. See docs/skills-authoring.md fo
 | Cost of goods | [COGS] | Cost of the units sold. Positive amount; subtract it from revenue. |
 | Gross margin | [Gross Margin] | [Revenue] - [COGS]. |
 | Margin % | [Gross Margin %] | [Gross Margin] / [Revenue], a fraction (0.32 = 32 %). |
+| Orders | [Orders] | Distinct invoices. |
 | Average basket | [Average Order Value] | [Revenue] / [Orders]. |
 
 Year-over-year block: [Revenue LY], [Revenue YoY %]. "This year" is the year in filter context.
@@ -32,6 +33,20 @@ Year-over-year block: [Revenue LY], [Revenue YoY %]. "This year" is the year in 
 - "Season" -> 'Date'[Season] (Spring, Summer, Autumn, Winter), not calendar quarters.
 - "Region" without qualifier -> 'Store'[Region]; "market" -> 'Store'[Country].
 - Returns are negative invoice lines; [Revenue] already nets them.
+
+## Contoso Inventory (table 'Stock')
+
+The second curated model, same 'Product' and 'Date' dimensions, plus 'Warehouse' ([Warehouse Name], [Region]).
+
+| Business term | Measure | Meaning and sign |
+|---|---|---|
+| Stock, units on hand | [Stock Units] | Units in the warehouse at the end of the period. |
+| Stock value | [Stock Value] | [Stock Units] at cost. |
+| Days of cover | [Days of Cover] | [Stock Units] / average daily units sold; a number of days. |
+| Stock-outs | [Stock-out Days] | Days in the period with zero units on hand. |
+
+'Stock' (fact): one row per product, warehouse and day. Stock measures are end-of-period balances,
+not sums: for a month use the last day, never SUM over days.
 
 ## Traps
 

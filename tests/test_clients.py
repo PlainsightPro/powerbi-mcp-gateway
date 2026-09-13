@@ -91,7 +91,7 @@ async def test_fabric_lists_models_per_workspace_with_paging():
         if path == "/v1/workspaces" and token == "p2":
             return httpx.Response(200, json={"value": [{"id": "w2", "displayName": "Two"}]})
         if path == "/v1/workspaces/w1/semanticModels":
-            return httpx.Response(200, json={"value": [{"id": "m1", "displayName": "Finance", "description": "d"}]})
+            return httpx.Response(200, json={"value": [{"id": "m1", "displayName": "Sales", "description": "d"}]})
         if path == "/v1/workspaces/w2/semanticModels":
             return httpx.Response(403, text="no")  # visible workspace, items not listable
         return httpx.Response(404)

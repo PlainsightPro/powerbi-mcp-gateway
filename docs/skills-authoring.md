@@ -2,7 +2,7 @@
 
 A skills folder is what turns the generic gateway into *your* assistant. It is plain Markdown and
 YAML, loaded once when the server starts, and it is the only place domain knowledge lives: the
-engine has no idea what "revenue" or "indirect cost" means. Start from the fictional example in
+engine has no idea what "revenue" or "days of cover" means. Start from the fictional example in
 `skills/` and replace every line.
 
 | File | Reaches the assistant as | Write it for |
@@ -18,7 +18,7 @@ engine has no idea what "revenue" or "indirect cost" means. Start from the ficti
 Keep it under a page. State the working method (list models first, read the context, prefer
 `generate_dax` with execute, use recipes), the rules (currency, sign conventions, never call
 Microsoft's GenerateQuery, how to handle access errors, answer language) and anything specific to
-your organisation ("two Finance models exist; never add their numbers").
+your organisation ("the Sales and Inventory models share the Product dimension; never add their numbers").
 
 ## glossary.md
 
@@ -59,8 +59,8 @@ before it improvises, so a wrong recipe produces confidently wrong answers.
 ```yaml
 models:
   - id: <semantic model id from app.powerbi.com/groups/<workspace>/datasets/<id>>
-    name: Finance
-    workspace: Finance
+    name: Contoso Sales
+    workspace: Sales Analytics
     description: >
       What this model is for, in one or two sentences.
     data_scope: Which entities or markets it covers; how to filter to one.
@@ -78,5 +78,12 @@ Models the user can open but that are not in the catalog are still listed, marke
 
 - `PBIMCP_SKILLS_DIR=<folder>` in `.env`, then `python -m powerbi_mcp` and connect a client; or
   `scripts/smoke_test.py "<a question>"` for a headless run including DAX generation.
-- The deploy script refuses a folder that lacks any of the four required files.
+- `python -m powerbi_mcp --check-skills <folder>` reports missing files, invalid recipe names, recipe
+  references without a file, and key measures the glossary never mentions. The deploy script runs it
+  before touching Azure; CI runs it on the example folder.
+- Recipe file names are lower-case letters, digits and hyphens; the name is what clients see as the
+  prompt name and the `skill://recipes/<name>` resource.
+- Two constraints are enforced by the engine on every generated query, whatever `dax-rules.md` says:
+  exactly one `EVALUATE`, and no `DEFINE TABLE` / `DEFINE COLUMN` (the hosted server rejects them).
+  Keep them in the rules anyway so the model does not waste a repair round on them.
 - Keep a few question/expected-answer pairs per recipe and re-run them after model changes.

@@ -36,11 +36,13 @@ Two ways to combine engine and skills:
 
 | Mode | How | Use when |
 |---|---|---|
-| **Engine image** (`EngineImage` in the profile) | The build is a two-line Dockerfile: `FROM ghcr.io/plainsightpro/powerbi-mcp-gateway:<tag>` plus `COPY skills/`. No Python is built; the deployment pins a released engine version | Customers and any deployment that should only move when you decide |
+| **Engine image** (`EngineImage` in the profile) | The build is a two-line Dockerfile: `FROM ghcr.io/plainsightpro/powerbi-mcp-gateway:<tag>` plus `COPY skills/`. No Python is built; the deployment pins a released engine version (`:latest` exists but is for trying things, never for a profile you rely on) | Customers and any deployment that should only move when you decide |
 | **Source build** (no `EngineImage`) | The checkout's code is built together with the skills | Development, or a deployment that needs an unreleased change |
 
-Releases: pushing a tag `vX.Y.Z` to the public repository runs the tests and publishes
-`ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` (and `:latest`). GitHub creates the container
+Releases: pushing a tag `vX.Y.Z` to the public repository runs the tests, checks that the tag matches
+`powerbi_mcp.__version__`, publishes `ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` (and `:latest`)
+and creates a GitHub Release with generated notes; `CHANGELOG.md` says what a deployment gets by
+moving to a tag. GitHub creates the container
 package **private** on its first publish; an organisation owner makes it public once
 (package page, **Package settings**, **Change visibility**), after which any Azure registry build can
 pull it anonymously. Until then `-EngineImage` builds fail with an authentication error and you use

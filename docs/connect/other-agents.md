@@ -22,8 +22,8 @@ secret up front. Register one client on the gateway yourself and paste the resul
 
 ```bash
 curl -s https://<host>/register -H "Content-Type: application/json" -d '{
-  "client_name": "Foundry finance agent",
-  "redirect_uris": ["https://<the platform''s documented callback URL>"],
+  "client_name": "Contoso sales agent",
+  "redirect_uris": ["https://<the callback URL the platform documents>"],
   "grant_types": ["authorization_code", "refresh_token"],
   "token_endpoint_auth_method": "none"
 }'
@@ -60,8 +60,14 @@ The first run opens a browser for the Microsoft sign-in; tokens are cached local
 | `get_recipe` | `name` | Markdown |
 | `get_semantic_model_schema` | `model_id`, `compact` (default true) | text block, or `{notes, schema}` when `compact=false` |
 | `execute_dax` | `model_id`, `dax_queries` (1 to 4), `max_rows` | `{executionResult: {tables: [{columns, rows}]}, semanticModel}` |
-| `generate_dax` | `model_id`, `question`, `execute`, `max_rows`, `chat_history` | `{dax, explanation, assumptions, result?, execution_error?, repair_error?, repaired_after?}` |
+| `generate_dax` | `model_id`, `question`, `execute`, `max_rows`, `chat_history` (the last 6 turns are used) | `{model_id, dax, explanation, assumptions, result?, execution_error?, repair_error?, repaired_after?}` |
 | `get_report_metadata` | `report_id` | pages, visuals, bindings, filters |
+| `recall` | `model_id` | `{model_id, memories: [{id, text, created_at, mine}]}`; the access error when the user cannot open the model |
+| `remember` | `model_id`, `text` (up to 500 characters by default) | `{model_id, memory: {id, text, created_at, mine}}` |
+| `forget` | `model_id`, `memory_id` (one of the caller's own) | `{model_id, forgotten: {...}}` |
 
 All tools raise a readable error when Power BI refuses the user (no Build permission, no licence,
-expired sign-in); nothing runs under a service identity.
+expired sign-in) or rate-limits them (the message carries the wait); nothing runs under a service
+identity. `max_rows` is capped by the deployment (`PBIMCP_MAX_ROWS_LIMIT`, 10,000 by default). The
+compact schema is cut at 60,000 characters with a `(schema truncated)` marker; the same text grounds
+`generate_dax`, so on a very large model pass `compact=false` to see everything.
