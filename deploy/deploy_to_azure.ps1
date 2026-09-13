@@ -142,6 +142,17 @@ function Invoke-AzQuiet {
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($out | Where-Object { $_ -is [string] }) -join "`n"
 }
+function Grant-Role([string]$PrincipalId, [string]$Role, [string]$Scope, [string]$What) {
+    # Idempotent; a brand-new identity can take a minute to replicate, so retry a few times.
+    foreach ($attempt in 1..5) {
+        & $script:AzCli role assignment create --assignee-object-id $PrincipalId --assignee-principal-type ServicePrincipal `
+            --role $Role --scope $Scope -o none 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "$Role on $What assigned"; return $true }
+        Start-Sleep -Seconds 15
+    }
+    Write-Warning "$Role on $What could not be assigned"
+    return $false
+}
 function NewRandomHex([int]$Bytes = 32) {
     $buffer = New-Object byte[] $Bytes
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
@@ -353,6 +364,16 @@ if (-not $appExists) {
     Write-Host "created"
 } else {
     if ($clientSecret) { Invoke-Az containerapp secret set -n $AppName -g $ResourceGroup --secrets "entra-client-secret=$clientSecret" -o none | Out-Null }
+    # Apps created by an earlier script version pull with the registry admin password. Move them to
+    # the identity (AcrPull first, so the new revision can pull), then roll the image.
+    $existingPrincipal = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query identity.principalId -o tsv
+    $acrId = Invoke-Az acr show -n $AcrName --query id -o tsv
+    $acrPull = Grant-Role $existingPrincipal "AcrPull" $acrId $AcrName
+    $registryIdentity = Invoke-AzQuiet containerapp registry list -n $AppName -g $ResourceGroup --query "[?server=='$acrServer'].identity | [0]" -o tsv
+    if ($acrPull -and $registryIdentity -ne 'system') {
+        Invoke-Az containerapp registry set -n $AppName -g $ResourceGroup --server $acrServer --identity system -o none | Out-Null
+        Write-Host "registry pull switched to the app identity"
+    }
     Invoke-Az containerapp update -n $AppName -g $ResourceGroup --image $image --set-env-vars @envVars "PBIMCP_BASE_URL=$baseUrl" -o none | Out-Null
     Write-Host "updated to $image"
 }
@@ -362,27 +383,37 @@ if ("https://$fqdn" -ne $baseUrl) { throw "Ingress host '$fqdn' differs from the
 Step "Roles for the app identity"
 $principalId = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query identity.principalId -o tsv
 $storageId = Invoke-Az storage account show -n $StorageName -g $ResourceGroup --query id -o tsv
-$tableRole = $false
-foreach ($attempt in 1..4) {
-    & $script:AzCli role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal `
-        --role "Storage Table Data Contributor" --scope $storageId -o none 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $tableRole = $true; break }
-    Start-Sleep -Seconds 15
-}
-if ($tableRole) { Write-Host "Storage Table Data Contributor on $StorageName assigned" }
-else { Write-Warning "Storage Table Data Contributor not assigned; the OAuth proxy cannot reach its state table until it is" }
 $foundryId = Invoke-Az cognitiveservices account show -n $FoundryName -g $ResourceGroup --query id -o tsv
-$assigned = $false
-foreach ($attempt in 1..4) {   # a brand-new identity can take a moment to replicate
-    & $script:AzCli role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal `
-        --role "Cognitive Services OpenAI User" --scope $foundryId -o none 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $assigned = $true; break }
-    Start-Sleep -Seconds 15
+$tableRole = Grant-Role $principalId "Storage Table Data Contributor" $storageId $StorageName
+if (-not $tableRole) { Write-Warning "the OAuth proxy cannot reach its state table until the role exists" }
+if (-not (Grant-Role $principalId "Cognitive Services OpenAI User" $foundryId $FoundryName)) {
+    Write-Warning "generate_dax will get 401 from Foundry until the role is granted"
 }
-if ($assigned) { Write-Host "role assigned" } else { Write-Warning "role assignment failed; generate_dax will get 401 from Foundry until it is granted" }
+if ($appExists -and -not $SkipBuild) {
+    # The registry admin user is only needed by apps that still pull with a password; this one now pulls
+    # with its identity, so close the password path (new registries never open it).
+    $pullIdentity = Invoke-AzQuiet containerapp registry list -n $AppName -g $ResourceGroup --query "[?server=='$acrServer'].identity | [0]" -o tsv
+    if ($pullIdentity -eq 'system') { Invoke-Az acr update -n $AcrName --admin-enabled false -o none | Out-Null; Write-Host "registry admin user disabled" }
+}
 
 Step "Redirect URIs on the Entra app"
 Invoke-Az ad app update --id $appId --web-redirect-uris "$baseUrl/auth/callback" "http://localhost:8000/auth/callback" | Out-Null
+
+Step "Waiting for $baseUrl/healthz"
+# The app reads its settings and opens its stores at startup; a revision that cannot (a missing
+# role, a bad setting) never answers here, and this run fails instead of leaving a broken revision.
+$healthy = $false
+foreach ($attempt in 1..30) {
+    try {
+        $health = Invoke-RestMethod -Uri "$baseUrl/healthz" -TimeoutSec 10
+        if ($health.status -eq 'ok') { $healthy = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 10
+}
+if (-not $healthy) {
+    throw "The new revision did not answer $baseUrl/healthz within five minutes. Inspect: az containerapp logs show -n $AppName -g $ResourceGroup --tail 100"
+}
+Write-Host "healthy: $($health.recipes.Count) recipes, $($health.curated_models) curated models"
 
 # ---------------------------------------------------------------- summary
 Write-Host ""
