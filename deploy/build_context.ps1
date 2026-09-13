@@ -1,7 +1,7 @@
 # Explicit allowlist: a build must never upload .env, Git history, or other local files.
 #
 # Two build modes share this staging step:
-#   source build   (default)      Dockerfile + requirements + powerbi_mcp/ + the selected skills
+#   source build   (default)      Dockerfile + pyproject.toml + uv.lock + powerbi_mcp/ + the selected skills
 #   engine image   (-EngineImage) a two-line Dockerfile: FROM <published engine image>, COPY skills
 # The second mode is how customer deployments track the public engine without a fork: they keep
 # only a skills folder and a deployment profile, and bump the image tag to upgrade.
@@ -19,7 +19,7 @@ function New-GatewayBuildContext([string]$AppRoot, [string]$SkillsDir, [string]$
         if ($EngineImage) {
             @("FROM $EngineImage", "COPY skills/ /app/skills/") | Set-Content -Path (Join-Path $context 'Dockerfile') -Encoding ascii
         } else {
-            foreach ($name in @('Dockerfile', 'requirements.txt')) {
+            foreach ($name in @('Dockerfile', 'pyproject.toml', 'uv.lock')) {
                 Copy-Item -LiteralPath (Join-Path $AppRoot $name) -Destination $context
             }
             $codeTarget = New-Item -ItemType Directory -Path (Join-Path $context 'powerbi_mcp')

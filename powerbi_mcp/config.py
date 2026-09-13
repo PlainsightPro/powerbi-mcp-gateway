@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FABRIC_RESOURCE = "https://api.fabric.microsoft.com"
+DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+DEFAULT_MEMORY_DIR = Path(__file__).resolve().parent.parent / ".memories"  # git-ignored; /data/memories in the image
 
 
 class Settings(BaseSettings):
@@ -28,14 +31,30 @@ class Settings(BaseSettings):
     # Foundry (Azure OpenAI) used by generate_dax
     foundry_endpoint: str | None = None
     foundry_deployment: str = "gpt-5"
-    foundry_reasoning_effort: str = "low"
+    foundry_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "low"
+    foundry_max_output_tokens: int = 4000  # reasoning tokens count too; raise it if answers get cut off
     foundry_api_key: str | None = None  # optional; default is Entra (managed identity / az login)
 
+    # OAuth proxy state (registered clients, upstream and refresh tokens). Unset = encrypted files on
+    # the replica's disk, wiped by every deploy; set = one Azure Table reached with the app identity.
+    state_storage_account: str | None = None
+    state_table_name: str = "mcpoauth"
+
+    # Memories: notes users attach to one semantic model, visible only to people who can open that
+    # model (memory.py). Stored next to the OAuth state when a storage account is set, else as JSON
+    # files under memory_dir. The caps keep one model's record under Azure Tables' 64 KB limit.
+    memory_dir: Path = DEFAULT_MEMORY_DIR
+    memory_table_name: str = "mcpmemories"
+    memory_max_per_model: int = 50
+    memory_max_chars: int = 500
+
     # Behaviour
-    catalog_cache_seconds: int = 300
-    schema_cache_seconds: int = 600
-    default_max_rows: int = 250
-    skills_dir: Path = Path(__file__).resolve().parent.parent / "skills"
+    catalog_cache_seconds: int = 300  # per user: which models they can open
+    schema_cache_seconds: int = 600  # per user and model: the schema fed to generate_dax
+    default_max_rows: int = 250  # rows per query when the client passes no max_rows
+    max_rows_limit: int = 10_000  # rows per query, whatever the client asks for
+    skills_dir: Path = DEFAULT_SKILLS_DIR
+    log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
 

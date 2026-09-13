@@ -3,6 +3,9 @@
 Use for "how did <measure> evolve over the last months" questions. Works on any model with a date
 table that has an integer year-month column. The example below uses the Contoso Retail model.
 
+On the Inventory model replace [Revenue] with [Stock Units] or [Stock Value]; they are end-of-month balances,
+so the query stays the same but never sum them across months.
+
 ## 1. Trend
 
 ```dax

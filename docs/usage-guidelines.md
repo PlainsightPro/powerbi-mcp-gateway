@@ -16,8 +16,8 @@ Three things follow from "on your behalf":
 1. Connect and sign in (see the guide for your tool).
 2. Ask **"Which Power BI models can I use?"** The curated ones come with a description and the
    questions they answer.
-3. Ask **"What do I need to know before asking finance questions?"** (or the domain of your
-   deployment). The assistant reads the glossary: vocabulary, sign conventions, known traps.
+3. Ask **"What do I need to know before asking questions about sales?"** (or whatever domain your
+   deployment covers). The assistant reads the glossary: vocabulary, sign conventions, known traps.
 4. Ask a real question, for example "How did revenue evolve per month this year, and which
    categories drove the change?"
 
@@ -30,13 +30,23 @@ Three things follow from "on your behalf":
   model"). Recipes are query sequences your organisation validated.
 - Ask one question at a time. Follow-ups build on the previous query.
 
+## Memories
+
+When you correct the assistant or learn something about a model worth keeping ("orders before
+2020 are incomplete in this model", "use [Net Revenue], not [Revenue], for board reports"), say
+**"remember that ..."**. The note is attached to that model and shown, from then on, to everyone
+who can open the model, including the assistant when it writes DAX for it. People without access
+to the model never see it. Ask **"what do you remember about this model?"** to review the notes and
+**"forget that"** to delete one of your own. Keep memories to facts about the model; they are not
+the place for result rows, personal data or anything confidential.
+
 ## Verifying a number
 
 - Ask **"Show me the DAX you ran."** Every result carries its query; you can paste it into DAX
   query view in Power BI Desktop or the service and get the same rows.
-- Ask **"Which model and which date table did you use?"** Models with a Yuki-style "original"
-  versus "corrected" view, or several date tables, are the usual source of two different answers
-  to one question.
+- Ask **"Which model and which date table did you use?"** Models that expose the same figures in
+  two views (for example "as booked" versus "as corrected"), or that carry several date tables, are
+  the usual source of two different answers to one question.
 - Compare one figure with a report visual you trust before you rely on a longer analysis.
 - The current month is usually incomplete; the assistant is told to say so, but check the load date.
 
@@ -51,6 +61,7 @@ Three things follow from "on your behalf":
 ## Privacy
 
 Your questions and the generated queries go to the gateway; result rows go back to the assistant
-you use. The gateway logs tool names, model ids and errors for operations, not result rows. What
+you use. The gateway logs one line per tool call (tool name, your user id, model id, duration, outcome and
+the error message when there is one), never the question, the query text or result rows. What
 the assistant's vendor retains is governed by that vendor's terms; ask your administrator which
 tools are approved for confidential data.

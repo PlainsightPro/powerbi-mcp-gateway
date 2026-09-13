@@ -1,18 +1,22 @@
 {
-  "$comment": "Deployment profile for the fictional Contoso deployment. Copy this file into a private deployment folder next to a skills/ folder and run the gateway's deploy script with -Profile <this file>. Keys are the parameter names of deploy/deploy_to_azure.ps1; explicit command-line arguments override them. SkillsDir is resolved relative to this file.",
+  "$comment": "Deployment profile for the fictional Contoso deployment. Copy this file into a private deployment folder next to a skills/ folder and run the gateway's deploy script with -Profile <this file>. Keys are the parameter names of deploy/deploy_to_azure.ps1; explicit command-line arguments override them. SkillsDir is resolved relative to this file. EngineImage pins a released engine; a deployment upgrades by changing that tag (':latest' is for development only).",
   "Location": "swedencentral",
   "ResourceGroup": "rg-powerbi-mcp-contoso",
   "AppName": "ca-powerbi-mcp",
   "EnvName": "env-powerbi-mcp",
   "LogName": "log-powerbi-mcp",
   "AcrName": "acrcontosopbimcp",
+  "StorageName": "stcontosopbimcp",
+  "StateTableName": "mcpoauth",
   "FoundryName": "aif-contoso-powerbi-mcp",
   "FoundryProject": "powerbi-mcp",
   "ModelName": "gpt-5",
   "ModelVersion": "2025-08-07",
   "ModelCapacity": 50,
+  "ReasoningEffort": "low",
   "EntraAppName": "Power BI MCP Gateway (Contoso)",
   "ServerName": "Contoso Power BI",
   "SkillsDir": "../skills",
-  "EngineImage": "ghcr.io/plainsightpro/powerbi-mcp-gateway:latest"
+  "EngineImage": "ghcr.io/plainsightpro/powerbi-mcp-gateway:0.1.0",
+  "OwnerTag": "platform-team@contoso.example"
 }
