@@ -109,3 +109,26 @@ async def test_fabric_401_is_an_access_error():
     with pytest.raises(FabricAccessError):
         await client.list_workspaces()
     await client.aclose()
+
+
+async def test_hosted_runs_each_query_separately_and_merges_tables():
+    """The hosted server only returns the first table of a multi-query call, so the client sends
+    one query per call and stitches the tables together in order."""
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        queries = body["params"]["arguments"]["daxQueries"]
+        sent.append(queries)
+        table = {"columns": [{"name": "q", "type": "Int64"}], "rows": [[len(sent)]]}
+        payload = {"executionResult": {"tables": [table]}, "semanticModel": {"Name": "m"}}
+        return _sse(
+            {"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+        )
+
+    client = HostedPowerBIMcp("t", "https://example.test/mcp", transport=httpx.MockTransport(handler))
+    result = await client.execute_query("m", ['EVALUATE ROW("a", 1)', 'EVALUATE ROW("b", 2)'], max_rows=5)
+    await client.aclose()
+    assert sent == [['EVALUATE ROW("a", 1)'], ['EVALUATE ROW("b", 2)']]
+    assert [t["rows"] for t in result["executionResult"]["tables"]] == [[[1]], [[2]]]
+    assert result["semanticModel"] == {"Name": "m"}

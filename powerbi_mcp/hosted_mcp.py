@@ -102,7 +102,21 @@ class HostedPowerBIMcp:
         return await self._call_structured("GetSemanticModelSchema", {"artifactId": model_id})
 
     async def execute_query(self, model_id: str, dax_queries: list[str], max_rows: int | None = None) -> dict:
-        args: dict[str, Any] = {"artifactId": model_id, "daxQueries": dax_queries}
+        """Run the queries and return one payload whose executionResult.tables holds one table per
+        query, in order. The hosted server accepts a list but only returns the first query's table,
+        so each query is sent on its own and the results are merged."""
+        results = [await self._execute_one(model_id, dax, max_rows) for dax in dax_queries]
+        if len(results) == 1:
+            return results[0]
+        merged = dict(results[0])
+        merged["executionResult"] = dict(results[0].get("executionResult") or {})
+        merged["executionResult"]["tables"] = [
+            table for r in results for table in (r.get("executionResult") or {}).get("tables", [])
+        ]
+        return merged
+
+    async def _execute_one(self, model_id: str, dax: str, max_rows: int | None) -> dict:
+        args: dict[str, Any] = {"artifactId": model_id, "daxQueries": [dax]}
         if max_rows is not None:
             args["maxRows"] = max_rows
         return await self._call_structured("ExecuteQuery", args)

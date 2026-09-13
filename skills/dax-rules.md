@@ -8,6 +8,9 @@
   Never re-aggregate a fact column when a measure already covers it.
 - Filter time through the date table, not the fact: use 'Date'[Year Month Id] (integer yyyymm) for
   month ranges and 'Date'[Year] for years.
+- Relative periods ("last 6 months", "year to date") are bounded by today's date, never by the
+  maximum of the date table: the model may hold future-dated rows. Derive the current yyyymm from
+  TODAY() or use a month-offset column when the date table has one.
 - Year-over-year comparisons: put one year in filter context and use the model's LY / YoY measures
   instead of building DATEADD logic.
 - Rankings: `TOPN(n, SUMMARIZECOLUMNS(...), [Alias], DESC)`; always add `ORDER BY` to the outer query.

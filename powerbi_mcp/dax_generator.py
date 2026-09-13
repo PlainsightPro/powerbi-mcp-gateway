@@ -122,7 +122,14 @@ class DaxGenerator:
     ) -> tuple[str, str]:
         instructions = (
             "You write DAX queries for Power BI semantic models. Answer only with the JSON object requested. "
-            "Use existing measures whenever one answers the question; never re-aggregate a column that a measure already covers.\n\n"
+            "Use existing measures whenever one answers the question; never re-aggregate a column that a measure already covers.\n"
+            "The query engine applies a measure's or column's format string to typed results, so a measure can come "
+            "back as text such as '1,729,015 EUR' or '81.11%'. The rows are consumed by a program: add + 0 to every "
+            'numeric measure or aggregate in the output columns ("Revenue", [Revenue] + 0) so the value is a number; '
+            "leave text and date measures as they are.\n"
+            "Never assume the date table ends at the current month: models can hold future-dated rows. Bound relative "
+            "periods such as 'last 6 months' or 'year to date' by today's date (TODAY(), or a month-offset column when "
+            "the model has one), never by the maximum of the date table.\n\n"
             "## House rules\n" + self._rules.strip() + "\n\n"
             "## Business glossary\n" + glossary.strip()
         )

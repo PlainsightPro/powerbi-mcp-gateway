@@ -12,6 +12,8 @@
 | `DAX generation failed: ... 401` or `PermissionDenied` | The gateway's identity lacks the **Cognitive Services OpenAI User** role on the Foundry resource | Administrator: re-run the deploy script (it assigns the role) or assign it in the portal |
 | `AI_Scenarios_SkuNotSupported` in an error | Something called Microsoft's Copilot-backed GenerateQuery instead of the gateway | Tell the assistant to use `generate_dax`; the gateway's instructions already say so |
 | The generated query fails twice (`execution_error` and `repair_error`) | The question needs a field the model does not have, or the glossary lacks the vocabulary | Rephrase with the measure names from `get_business_context`; if this repeats, the deployment's glossary needs an entry |
+| A number comes back as text such as `€1.729.015` or `81.11%` | Microsoft's hosted server applies the measure's format string to typed results | Add `+ 0` to the measure in the query column (`"Won", [Won Amount] + 0`); `generate_dax` does this by itself |
+| "Last 6 months" returns empty or future months | The model holds future-dated rows (prepaid invoices, accruals), so the maximum of the date table is not today | Bound the period by today's date or the model's month-offset column; the DAX generator is told to do so |
 | Two different answers to the same question | Different date tables, "original" versus "corrected" views, or an incomplete current month | Ask which model, date table and view were used; make the period explicit |
 | Slow first response of the day | The container app scaled down or restarted | Nothing to do; subsequent calls are fast |
 | Health check `https://<host>/healthz` fails | The container app is down | Administrator: `az containerapp logs show`, then redeploy |

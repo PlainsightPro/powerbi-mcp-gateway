@@ -107,3 +107,12 @@ async def test_repair_feeds_back_the_failed_query_and_engine_error():
     assert out.dax.startswith("EVALUATE")
     user = stub.calls[0]["input"]
     assert "Previous attempt" in user and "EVALUATE ROW(1']" in user and "syntax for ']'" in user
+
+
+def test_prompt_carries_engine_rules_for_formatted_values_and_future_dates():
+    """Two hosted-server behaviours every deployment meets: format strings turn measures into text,
+    and date tables can extend past today. The engine states both; skills need not."""
+    gen = DaxGenerator(StubResponses(), deployment="gpt-5", rules="- rules", reasoning_effort="low")
+    instructions, _ = gen.build_prompt("q", "schema", "", "glossary")
+    assert "+ 0" in instructions and "format string" in instructions
+    assert "future-dated" in instructions and "TODAY()" in instructions
