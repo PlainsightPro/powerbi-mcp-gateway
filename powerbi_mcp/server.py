@@ -12,68 +12,31 @@ deployment, grounded in the model schema plus the deployment's skills folder.
 
 The engine carries no domain vocabulary: tool names are generic, and every prompt, glossary entry,
 recipe and catalog row comes from the skills folder the deployment was built with.
+
+This module is the MCP surface only. The behaviour behind each tool lives in `gateway.py`, which
+takes the user key and the Fabric token as plain values so it can be tested without OAuth.
 """
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
 from fastmcp.server.auth.providers.azure import AzureProvider, EntraOBOToken
 from fastmcp.server.dependencies import get_access_token
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .catalog import Catalog
 from .config import Settings, load_settings
-from .dax_generator import DaxGenerator, compact_schema
-from .fabric import FabricAccessError, FabricClient
-from .hosted_mcp import HostedMcpError, HostedPowerBIMcp
+from .gateway import Gateway
 from .skills import Skills
-
-FOUNDRY_SCOPE = "https://cognitiveservices.azure.com/.default"
-
-
-class TtlCache:
-    def __init__(self, ttl_seconds: float) -> None:
-        self._ttl = ttl_seconds
-        self._items: dict[Any, tuple[float, Any]] = {}
-
-    def get(self, key: Any) -> Any | None:
-        hit = self._items.get(key)
-        if not hit:
-            return None
-        expires, value = hit
-        if expires < time.monotonic():
-            self._items.pop(key, None)
-            return None
-        return value
-
-    def set(self, key: Any, value: Any) -> None:
-        self._items[key] = (time.monotonic() + self._ttl, value)
 
 
 def _current_user_key() -> str:
     token = get_access_token()
     claims = getattr(token, "claims", None) or {}
     return claims.get("oid") or claims.get("sub") or claims.get("preferred_username") or "anonymous"
-
-
-def _as_tool_error(exc: Exception) -> ToolError:
-    if isinstance(exc, FabricAccessError):
-        return ToolError(
-            "Power BI refused the request for the signed-in user. They need Build permission on the "
-            "semantic model and a license appropriate to its workspace (Premium Per User for a PPU "
-            f"workspace, or the applicable Power BI license on Fabric/Premium capacity). Details: {exc}"
-        )
-    if isinstance(exc, HostedMcpError):
-        detail = f" (code {exc.code})" if exc.code else ""
-        data = f" {exc.data}" if exc.data else ""
-        return ToolError(f"Power BI MCP error{detail}: {exc}{data}")
-    return ToolError(f"{type(exc).__name__}: {exc}")
 
 
 def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
@@ -95,10 +58,10 @@ def _recipe_prompt_factory(skills: Skills, name: str) -> Callable[..., str]:
     return recipe_prompt
 
 
-def build_server(settings: Settings | None = None) -> FastMCP:
+def build_server(settings: Settings | None = None, gateway: Gateway | None = None) -> FastMCP:
     settings = settings or load_settings()
-    skills = Skills.load(settings.skills_dir)
-    catalog = Catalog.load(settings.skills_dir / "catalog.yaml")
+    gateway = gateway or Gateway.from_settings(settings)
+    skills = gateway.skills
 
     auth = AzureProvider(
         client_id=settings.client_id,
@@ -114,48 +77,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
     )
 
     mcp = FastMCP(name=settings.server_name, instructions=skills.instructions, auth=auth)
-
     fabric_scopes = [settings.fabric_scope]
-    models_cache = TtlCache(settings.catalog_cache_seconds)
-    schema_cache = TtlCache(settings.schema_cache_seconds)
-    generator_box: dict[str, DaxGenerator] = {}
-
-    def generator() -> DaxGenerator:
-        if "gen" in generator_box:
-            return generator_box["gen"]
-        if not settings.foundry_endpoint:
-            raise ToolError("generate_dax is not configured: PBIMCP_FOUNDRY_ENDPOINT is empty on this server.")
-        from openai import AsyncOpenAI
-
-        if settings.foundry_api_key:
-            api_key: Any = settings.foundry_api_key
-        else:
-            from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
-
-            api_key = get_bearer_token_provider(DefaultAzureCredential(process_timeout=60), FOUNDRY_SCOPE)
-        client = AsyncOpenAI(base_url=settings.foundry_endpoint.rstrip("/") + "/openai/v1/", api_key=api_key)
-        generator_box["gen"] = DaxGenerator(
-            client.responses,
-            deployment=settings.foundry_deployment,
-            rules=skills.dax_rules,
-            reasoning_effort=settings.foundry_reasoning_effort,
-        )
-        return generator_box["gen"]
-
-    async def fetch_schema(model_id: str, fabric_token: str) -> dict:
-        key = (_current_user_key(), model_id.lower())
-        cached = schema_cache.get(key)
-        if cached is not None:
-            return cached
-        hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
-        try:
-            schema = await hosted.get_schema(model_id)
-        except Exception as exc:
-            raise _as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()
-        schema_cache.set(key, schema)
-        return schema
 
     # ------------------------------------------------------------------ tools
 
@@ -168,35 +90,20 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         the returned `id` in every other tool; never guess or recall a model id. Curated models come
         first with their description, data scope, default date table, key measures and recipes.
         Set include_uncurated=false to see only the curated models."""
-        user = _current_user_key()
-        rows = models_cache.get(user)
-        if rows is None:
-            client = FabricClient(fabric_token, settings.fabric_api_url)
-            try:
-                accessible = await client.list_accessible_models()
-            except Exception as exc:
-                raise _as_tool_error(exc) from exc
-            finally:
-                await client.aclose()
-            rows = catalog.merge(accessible)
-            models_cache.set(user, rows)
-        return rows if include_uncurated else [r for r in rows if r["curated"]]
+        return await gateway.list_models(_current_user_key(), fabric_token, include_uncurated)
 
     @mcp.tool(name="get_business_context")
     def get_business_context() -> str:
         """This deployment's business glossary: which measure answers which question, sign
         conventions, date tables, model traps, and the index of available recipes. Read it before
         answering a business question or writing DAX by hand."""
-        return skills.glossary.strip() + "\n\n## Recipes (use get_recipe)\n" + skills.recipe_index()
+        return gateway.business_context()
 
     @mcp.tool(name="get_recipe")
     def get_recipe(name: str) -> str:
         """A step-by-step recipe for a recurring analysis defined by this deployment: the queries to
         run in order and how to read them. Recipe names are listed by get_business_context."""
-        recipe = skills.recipes.get(name.strip().lower())
-        if recipe is None:
-            raise ToolError(f"Unknown recipe '{name}'. Available:\n{skills.recipe_index()}")
-        return recipe
+        return gateway.recipe(name)
 
     @mcp.tool(name="get_semantic_model_schema")
     async def get_semantic_model_schema(
@@ -207,11 +114,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         """Tables, columns, measures (with descriptions) and relationships of one semantic model,
         plus the curated notes for it. Large: fetch once per model per conversation. compact=true
         returns a readable text block; compact=false returns the raw JSON."""
-        schema = await fetch_schema(model_id, fabric_token)
-        notes = catalog.notes_for(model_id)
-        if compact:
-            return (f"## Notes\n{notes}\n\n" if notes else "") + "## Schema\n" + compact_schema(schema)
-        return {"notes": notes, "schema": schema}
+        return await gateway.schema(_current_user_key(), fabric_token, model_id, compact)
 
     @mcp.tool(name="execute_dax")
     async def execute_dax(
@@ -223,15 +126,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         """Run one to four DAX queries (each a single EVALUATE) against a semantic model as the
         signed-in user and return the rows. Default cap 250 rows per query. Use the queries from a
         recipe or from generate_dax; aggregate before you list rows."""
-        if not dax_queries or len(dax_queries) > 4:
-            raise ToolError("Pass between 1 and 4 DAX queries.")
-        hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
-        try:
-            return await hosted.execute_query(model_id, dax_queries, max_rows or settings.default_max_rows)
-        except Exception as exc:
-            raise _as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()
+        return await gateway.execute(fabric_token, model_id, dax_queries, max_rows)
 
     @mcp.tool(name="generate_dax")
     async def generate_dax(
@@ -247,52 +142,9 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         query). With execute=true (default) the query runs as the signed-in user and the rows come
         back with the DAX and the assumptions made. Pass chat_history ([{role, content}]) for
         follow-up questions so the query builds on the previous turn."""
-        schema = await fetch_schema(model_id, fabric_token)
-        notes = catalog.notes_for(model_id)
-        try:
-            generated = await generator().generate(question, schema, notes, skills.glossary, chat_history)
-        except ToolError:
-            raise
-        except Exception as exc:
-            raise ToolError(f"DAX generation failed: {type(exc).__name__}: {exc}") from exc
-
-        result: dict[str, Any] = {
-            "model_id": model_id,
-            "dax": generated.dax,
-            "explanation": generated.explanation,
-            "assumptions": generated.assumptions,
-        }
-        if not execute:
-            return result
-
-        hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
-        try:
-            rows = max_rows or settings.default_max_rows
-            try:
-                run = await hosted.execute_query(model_id, [generated.dax], rows)
-            except Exception as first_exc:
-                first_error = str(_as_tool_error(first_exc))
-                try:
-                    repaired = await generator().repair(
-                        question, schema, notes, skills.glossary, generated.dax, first_error
-                    )
-                    run = await hosted.execute_query(model_id, [repaired.dax], rows)
-                except Exception as second_exc:
-                    result["execution_error"] = first_error
-                    result["repair_error"] = str(_as_tool_error(second_exc))
-                    return result
-                result.update(
-                    {
-                        "dax": repaired.dax,
-                        "explanation": repaired.explanation,
-                        "assumptions": repaired.assumptions,
-                        "repaired_after": first_error,
-                    }
-                )
-            result["result"] = run.get("executionResult", run)
-        finally:
-            await hosted.aclose()
-        return result
+        return await gateway.generate(
+            _current_user_key(), fabric_token, model_id, question, execute, max_rows, chat_history
+        )
 
     @mcp.tool(name="get_report_metadata")
     async def get_report_metadata(
@@ -302,13 +154,7 @@ def build_server(settings: Settings | None = None) -> FastMCP:
         """Pages, visuals, field bindings and filters of a Power BI report the user can open.
         Useful to learn how a model is used in practice before writing DAX for a question phrased
         in report terms."""
-        hosted = HostedPowerBIMcp(fabric_token, settings.hosted_mcp_url)
-        try:
-            return await hosted.get_report_metadata(report_id)
-        except Exception as exc:
-            raise _as_tool_error(exc) from exc
-        finally:
-            await hosted.aclose()
+        return await gateway.report_metadata(fabric_token, report_id)
 
     # ---------------------------------------------------------------- prompts
 
@@ -339,6 +185,6 @@ def build_server(settings: Settings | None = None) -> FastMCP:
 
     @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(_: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok", "recipes": sorted(skills.recipes), "curated_models": len(catalog.entries)})
+        return JSONResponse(gateway.health())
 
     return mcp

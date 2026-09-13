@@ -25,8 +25,8 @@ from powerbi_mcp.catalog import Catalog
 from powerbi_mcp.config import load_settings
 from powerbi_mcp.dax_generator import DaxGenerator
 from powerbi_mcp.fabric import FabricClient
+from powerbi_mcp.gateway import FOUNDRY_SCOPE
 from powerbi_mcp.hosted_mcp import HostedMcpError, HostedPowerBIMcp
-from powerbi_mcp.server import FOUNDRY_SCOPE
 from powerbi_mcp.skills import Skills
 
 
