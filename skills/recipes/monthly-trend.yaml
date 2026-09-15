@@ -1,0 +1,30 @@
+version: 1
+title: Monthly sales trend
+description: Fixed measures for the fictional sales model; explicit inclusive year-month bounds.
+models: [11111111-1111-1111-1111-111111111111]
+parameters:
+  start_month:
+    type: integer
+    description: First year-month as YYYYMM, inclusive.
+  end_month:
+    type: integer
+    description: Last year-month as YYYYMM, inclusive.
+required_objects:
+  - {table: Date, name: Year Month Id, kind: column}
+  - {table: Sales, name: Revenue, kind: measure}
+  - {table: Sales, name: Gross Margin %, kind: measure}
+steps:
+  - id: trend
+    description: Revenue and gross margin by month in the selected range.
+    dax: |
+      EVALUATE
+      SUMMARIZECOLUMNS(
+          'Date'[Year Month Id],
+          FILTER(VALUES('Date'[Year Month Id]),
+              'Date'[Year Month Id] >= {{start_month}} && 'Date'[Year Month Id] <= {{end_month}}),
+          "Revenue", [Revenue],
+          "Gross Margin %", [Gross Margin %]
+      )
+      ORDER BY 'Date'[Year Month Id]
+    max_rows: 120
+    min_rows: 1

@@ -14,5 +14,12 @@
   "EntraAppName": "Power BI MCP Gateway (Contoso)",
   "ServerName": "Contoso Power BI",
   "SkillsDir": "../skills",
-  "EngineImage": "ghcr.io/plainsightpro/powerbi-mcp-gateway:latest"
+  "EngineImage": "",
+  "TimeZone": "UTC",
+  "OAuthStorageAccountName": "",
+  "OAuthShareName": "gateway-oauth",
+  "FoundryEndpoint": "",
+  "FoundryResourceId": "",
+  "DisableGeneration": false,
+  "EphemeralOAuthStorage": false
 }

@@ -7,8 +7,10 @@ from dataclasses import dataclass
 
 import httpx
 
+from .errors import GatewayError, http_error, request_with_retry
 
-class FabricAccessError(RuntimeError):
+
+class FabricAccessError(GatewayError):
     """The user's token was rejected by the Fabric API (expired, missing consent, no license)."""
 
 
@@ -38,6 +40,7 @@ class FabricClient:
             transport=transport,
         )
         self._sem = asyncio.Semaphore(concurrency)
+        self.warnings: list[dict] = []
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -48,10 +51,12 @@ class FabricClient:
         params: dict[str, str] = {}
         while True:
             async with self._sem:
-                resp = await self._client.get(path, params=params)
+                resp = await request_with_retry(self._client, "GET", path, params=params)
             if resp.status_code in (401, 403):
-                raise FabricAccessError(f"Fabric API {resp.status_code} on {path}: {resp.text[:300]}")
-            resp.raise_for_status()
+                raise FabricAccessError(f"Fabric API returned HTTP {resp.status_code}.",
+                                        kind="authentication" if resp.status_code == 401 else "permission")
+            if not resp.is_success:
+                raise http_error(resp, "Fabric API")
             body = resp.json()
             items.extend(body.get("value", []))
             token = body.get("continuationToken")
@@ -68,12 +73,16 @@ class FabricClient:
     async def list_accessible_models(self) -> list[SemanticModelRef]:
         """Every semantic model in every workspace the user can open, as one flat list."""
         workspaces = await self.list_workspaces()
+        self.warnings = []
 
         async def models_of(ws: dict) -> list[SemanticModelRef]:
             try:
                 models = await self.list_semantic_models(ws["id"])
-            except (FabricAccessError, httpx.HTTPStatusError):
-                return []  # a workspace the user can see but whose items are not listable
+            except (GatewayError, httpx.TransportError) as exc:
+                from .errors import error_info
+
+                self.warnings.append({"workspace_id": ws["id"], "error": error_info(exc).model_dump()})
+                return []
             return [
                 SemanticModelRef(
                     id=m["id"],

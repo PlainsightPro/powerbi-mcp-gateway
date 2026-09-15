@@ -35,7 +35,7 @@ def test_merge_only_returns_accessible_models_curated_first(skills_dir):
 
 def test_skills_load_everything(skills_dir):
     skills = Skills.load(skills_dir)
-    on_disk = {p.stem for p in (skills_dir / "recipes").glob("*.md")}
+    on_disk = {p.stem for p in (skills_dir / "recipes").iterdir() if p.suffix in (".md", ".yaml")}
     assert set(skills.recipes) == on_disk and on_disk
     assert "list_semantic_models" in skills.instructions
     assert skills.glossary.strip() and "EVALUATE" in skills.dax_rules

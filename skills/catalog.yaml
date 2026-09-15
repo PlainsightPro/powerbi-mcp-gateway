@@ -6,6 +6,9 @@ models:
   - id: 11111111-1111-1111-1111-111111111111
     name: Contoso Sales
     workspace: Sales Analytics
+    aliases: [sales, turnover]
+    topics: [revenue, margin, stores, products]
+    context_file: models/sales.md
     description: >
       Invoice lines by product, store and customer with the retail KPIs (revenue, units, gross
       margin, basket). The model for "how are sales doing" questions.
@@ -20,8 +23,11 @@ models:
   - id: 22222222-2222-2222-2222-222222222222
     name: Contoso Inventory
     workspace: Supply Chain
+    aliases: [inventory, stock]
+    topics: [warehouses, availability, cover]
+    context_file: models/inventory.md
     description: Stock on hand, days of cover and stock-outs per warehouse and product.
     data_scope: All warehouses.
     default_date_table: Date
     key_measures: [Stock Units, Stock Value, Days of Cover, Stock-out Days]
-    recipes: [monthly-trend, top-movers]
+    recipes: [top-movers]

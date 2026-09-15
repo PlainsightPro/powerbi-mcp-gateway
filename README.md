@@ -11,16 +11,17 @@ model schema: everything domain-specific comes from a *skills folder* that each 
 
 ## Why
 
-Microsoft's hosted Power BI MCP server can run DAX for a user, but it needs a model id you have to
-know, it carries no business vocabulary, and its `GenerateQuery` tool runs on Copilot, which needs
-a Copilot licence and an F2 or P1 capacity (on Premium Per User it fails with
-`AI_Scenarios_SkuNotSupported`). The gateway sits in front of it:
+Microsoft's hosted Power BI MCP server runs DAX and exposes model-authored metadata, but its tools
+need a model id. Its `GenerateQuery` tool uses Copilot. The gateway adds model discovery, centrally
+maintained business definitions, executable recipes and a choice of Foundry or client-side DAX
+generation. It preserves Microsoft's model metadata rather than replacing it. See Microsoft's
+[hosted tool documentation](https://learn.microsoft.com/en-us/power-bi/developer/mcp/remote-mcp-server-tools).
 
 | Need | Microsoft's hosted server | Gateway |
 |---|---|---|
 | Which models exist | none; you must know the id | `list_semantic_models`: only what the user can open, curated ones with description, scope and key measures |
-| Business knowledge | none | server instructions, `get_business_context`, one prompt per recipe, `skill://` resources |
-| DAX generation | `GenerateQuery` on Copilot: Copilot licence plus F2/P1 capacity, not Premium Per User | `generate_dax` on your own Foundry (Azure OpenAI) deployment, grounded in schema, glossary and rules, with one repair round; no Copilot, no Fabric capacity |
+| Business knowledge | Model-authored AI metadata, descriptions and report context | Adds shared and model-specific business definitions, validated workflows and reusable context |
+| DAX generation | `GenerateQuery` on Copilot, with its licensing/capacity requirements | Foundry generation with one query repair, or client-side generation; no use of Copilot GenerateQuery |
 | Client onboarding | an Entra app registration per client | OAuth proxy with dynamic client registration: paste the URL, sign in |
 | Execution | schema, DAX, report metadata | the same, called with the user's on-behalf-of token, so Build permission and row-level security apply |
 
@@ -52,17 +53,31 @@ Gateway  (Azure Container Apps)                          FastMCP + Azure OAuth p
    `-- managed identity -> Foundry model deployment (Responses API) for generate_dax
 ```
 
+## Start with a question
+
+Open `https://<host>/` for connection instructions. After signing in, ask a question with a model
+name or paste a Power BI report link. The `analyze` tool resolves the model, loads its business
+context and relevant schema, then generates and runs DAX. Ambiguous choices return a question
+with model candidates. Return the supplied `context` with follow-ups to retain period and filters.
+
+See [the workflow guide](docs/workflows.md) for examples, result statuses and client-side generation.
+
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `list_semantic_models` | Models the user can open; curated first with description, scope, date table, key measures, recipes |
+| `analyze` | Question or report link to grounded analysis, evidence and reusable follow-up context |
+| `search_semantic_models` | Search names, aliases, topics or measures; filter workspace, paginate, refresh and verify query access |
+| `list_semantic_models` | Workspace-discovered models; curated first; query access remains unchecked until verified |
 | `get_business_context` | The deployment's glossary: vocabulary, measures, dates, model traps, recipe index |
-| `get_recipe` | A validated query sequence for a recurring analysis |
+| `get_recipe` / `run_recipe` | Read instructions or execute a typed YAML workflow, stopping on a failed step |
+| `get_model_context` | Shared and model-specific definitions, relevant schema and compatible recipes |
+| `search_schema` / `get_dimension_values` | Find exact objects and permitted filter values |
 | `get_semantic_model_schema` | Tables, columns, measures with descriptions, relationships |
 | `execute_dax` | Run 1 to 4 DAX queries as the user (default 250 rows) |
 | `generate_dax` | Question to DAX, optionally executed; returns DAX, explanation, assumptions, rows |
-| `get_report_metadata` | Pages, visuals and filters of a report the user can open |
+| `get_report_metadata` | Authored pages, visuals and filters; current personal slicer state is unavailable |
+| `diagnose_connection` | Check discovery, schema and constant query access; optional generation probe |
 
 Prompts: one per recipe in the skills folder. Resources: `skill://glossary`, `skill://dax-rules`,
 `skill://catalog`, `skill://recipes/{name}`. The tool contract is in
@@ -71,14 +86,16 @@ Prompts: one per recipe in the skills folder. Resources: `skill://glossary`, `sk
 ## Skills: the part you own
 
 `skills/` in this repository is a **fictional example** (Contoso Retail). A deployment brings its
-own folder with the same five parts and the gateway is built with it:
+own folder with these parts and the gateway is built with it:
 
 | File | Purpose |
 |---|---|
 | `instructions.md` | How the assistant should work with the tools; sent to every client |
 | `glossary.md` | Business vocabulary, which measure answers which question, sign conventions, traps |
 | `dax-rules.md` | House rules for DAX generation |
-| `recipes/*.md` | Validated query sequences; each becomes a prompt and a resource |
+| `models/*.md` | Model-specific definitions selected through `catalog.yaml` |
+| `recipes/*.md` | Human-readable analysis instructions; each becomes a prompt and resource |
+| `recipes/*.yaml` | Optional executable workflows with typed parameters and result checks |
 | `catalog.yaml` | Curated models: id, workspace, scope, key measures, notes |
 
 Nothing about a real organisation belongs in this repository. See
@@ -87,7 +104,7 @@ Nothing about a real organisation belongs in this repository. See
 
 ## Deploy
 
-Prerequisites: PowerShell 7, Azure CLI 2.78+, signed in with rights to register Entra applications
+Prerequisites: Python 3.11+ with `requirements-dev.txt` installed, PowerShell 7, Azure CLI 2.78+, signed in with rights to register Entra applications
 and grant admin consent, and Contributor on the subscription. The tenant needs the Power BI MCP
 endpoint enabled (see [docs/administration.md](docs/administration.md)).
 
@@ -102,9 +119,11 @@ endpoint enabled (see [docs/administration.md](docs/administration.md)).
 The script creates or updates, idempotently: the Entra app (confidential client, `access_as_user`
 scope, delegated Power BI permissions, admin consent), a Foundry resource with a model deployment,
 a container registry, Log Analytics, a Container Apps environment and the container app with a
-managed identity. It stages only runtime code and the selected skills for the build; `.env`, Git
+managed identity, plus Azure Files for encrypted OAuth state. It stages only runtime code and the selected skills for the build; `.env`, Git
 history and private notes never reach the image. Re-run after changes; `-SkipFoundry` skips the
-model part, `-SkipBuild` keeps the running image.
+model part, `-SkipBuild` keeps the running image. `-ValidateOnly` checks skills and profile locally.
+Use `-FoundryEndpoint` for an existing deployment, or `-DisableGeneration` for client-written DAX.
+Set `-ModelName` to the deployment name when using an existing endpoint. See [administration](docs/administration.md).
 
 Releases publish the engine image to `ghcr.io/plainsightpro/powerbi-mcp-gateway:<version>`; a
 deployment profile with `EngineImage` layers its skills on that image instead of building the
@@ -139,18 +158,21 @@ signed-in user needs the Cognitive Services OpenAI User role on the Foundry reso
 `PBIMCP_FOUNDRY_API_KEY` for the session.
 
 Two checks exist: `scripts/smoke_test.py` runs the token exchange, catalog, schema, query and DAX
-generation headlessly with the Azure CLI identity (the deploy script's `-PreauthorizeAzureCli`
+generation (with `--generate`) headlessly with the Azure CLI identity (the deploy script's `-PreauthorizeAzureCli`
 enables it), and `scripts/check_gateway.py https://<host>/mcp` verifies a deployed gateway through
 the real browser sign-in.
 
 ## Known limits
 
-- The OAuth proxy keeps client registrations and encrypted upstream tokens on the replica's disk;
-  a redeploy means clients sign in again, and the app runs one replica. Add a `client_storage`
-  backend before scaling out.
+- Keep one replica. Deployment now mounts encrypted OAuth state on Azure Files; preserve both the
+  share and signing key across updates. This does not establish support for multiple replicas.
+  Existing ephemeral deployments require a fresh sign-in when first migrated.
 - Skills are deployment-wide, not filtered by the user's permissions; separate deployments for
   groups that must not share business knowledge.
-- `generate_dax` returns one query per call; multi-step analyses follow recipes.
+- `generate_dax` returns one query per call; executable recipes support up to 12 ordered steps.
+- Workspace discovery can miss directly shared models. Verify curated candidates or supply a known
+  model id; every schema and query request still uses the signed-in user's token.
+- Query execution time is not data freshness. Completeness stays unknown unless Power BI reports it.
 
 ## License
 

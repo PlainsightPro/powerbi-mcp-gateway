@@ -1,27 +1,36 @@
 # Troubleshooting
 
-| Symptom | Likely cause | What to do |
-|---|---|---|
-| Sign-in page opens but the tool never shows "connected" | The browser callback did not reach the tool (blocked pop-up, a different browser profile, corporate proxy) | Retry with the browser the tool opened; in Claude Code paste the full callback URL from the address bar when asked |
-| Sign-in loops, or `AADSTS50011` (redirect URI mismatch) | The gateway was redeployed on a new host name and the Entra app still lists the old callback | Administrator: re-run the deploy script, which registers `https://<host>/auth/callback` again |
-| `401 Unauthorized` after it used to work | Your gateway session expired, or the gateway restarted and lost its client registrations (single-replica deployments) | Reconnect: Claude Code `/mcp` then clear authentication and sign in; Desktop/claude.ai remove and re-add the connector; VS Code restart the server |
-| "Power BI refused the request for the signed-in user" | No **Build** permission on that model, or no licence for the workspace (PPU workspaces need a PPU licence) | Ask the model owner for Build permission; check your licence in Power BI, **Settings**, **Licenses** |
-| `list_semantic_models` returns an empty list | Your account has no workspace access, or the Fabric tenant blocks the REST API for your user | Open app.powerbi.com and confirm you can see workspaces; then ask the administrator to check the tenant settings in [Administration](administration.md) |
-| A model you can open in Power BI is missing from the list | It is a Pro-only workspace, or the workspace listing is cached (5 minutes) | Wait five minutes and retry; Pro-only workspaces are outside the supported tiers |
-| "generate_dax is not configured" | The deployment has no Foundry endpoint | Administrator: set `PBIMCP_FOUNDRY_ENDPOINT`; until then the assistant writes DAX itself and runs `execute_dax` |
-| `DAX generation failed: ... 401` or `PermissionDenied` | The gateway's identity lacks the **Cognitive Services OpenAI User** role on the Foundry resource | Administrator: re-run the deploy script (it assigns the role) or assign it in the portal |
-| `AI_Scenarios_SkuNotSupported` in an error | Something called Microsoft's Copilot-backed GenerateQuery instead of the gateway | Tell the assistant to use `generate_dax`; the gateway's instructions already say so |
-| The generated query fails twice (`execution_error` and `repair_error`) | The question needs a field the model does not have, or the glossary lacks the vocabulary | Rephrase with the measure names from `get_business_context`; if this repeats, the deployment's glossary needs an entry |
-| Two different answers to the same question | Different date tables, "original" versus "corrected" views, or an incomplete current month | Ask which model, date table and view were used; make the period explicit |
-| Slow first response of the day | The container app scaled down or restarted | Nothing to do; subsequent calls are fast |
-| Health check `https://<host>/healthz` fails | The container app is down | Administrator: `az containerapp logs show`, then redeploy |
+Start with `diagnose_connection` from your signed-in assistant. Supply `model_id` to test a specific
+model. The public `/healthz` endpoint only says whether the server process is running.
 
-## For administrators: reading the logs
+| Symptom or status | Likely cause | Next step |
+|---|---|---|
+| Sign-in never finishes | Callback blocked or opened in another browser context | Retry the client's sign-in flow and use its callback instructions |
+| `AADSTS50011` | Redirect URI mismatch | Verify `https://<host>/auth/callback` on the gateway's Entra application |
+| `authentication` or HTTP 401 from Power BI | Expired or invalid user session | Reconnect using your work account |
+| Repeated reconnects after deployment | OAuth storage missing, key changed, or ephemeral mode | Check the mount and stable signing key; initial migration requires a new sign-in |
+| `permission` | Model Build access, licence or tenant settings | Have the model owner check the diagnostic's model and permissions |
+| Model missing from discovery | Direct sharing, workspace access or cached listing | Refresh; use access verification for curated models, or supply its known id/report link |
+| Discovery is `partial` | A workspace or candidate could not be checked | Read warnings, fix the affected access/service issue, then refresh |
+| `needs_clarification` | Several matching models or material scope is missing | Choose a candidate or provide the requested scope/recipe parameters |
+| `context_ready` | Server generation disabled | Have the client write DAX from returned model context, then call `execute_dax` |
+| Foundry generation error | Endpoint, deployment name, model support or identity access | Check generation configuration and the app identity's OpenAI User role |
+| `throttled` | Upstream rate limit | Wait for `retry_after_seconds` before repeating |
+| `unavailable` | Timeout or upstream outage | Retry after the service recovers; no DAX repair is attempted |
+| `protocol` | Unexpected upstream response | Administrator: check hosted MCP compatibility and the response shape |
+| Both query attempts fail | Missing objects, unsupported DAX or incomplete business definitions | Inspect both attempts, exact schema and selected model context |
+| Different figures from a report | Different date relationship, scope, slicers or freshness | Compare model, period and explicit filters; report links do not capture personal slicers |
+| `partial` result or unknown completeness | Result limited or recipe stopped | Check step statuses; aggregate or narrow the query before drawing conclusions |
+| Skills validation fails | Invalid YAML, unknown keys, missing references or incompatible recipe | Fix the reported definition, then validate again before building |
+
+`generate_dax` repairs a DAX query error once. It retains both attempts; the final DAX is the query
+actually attempted last. A prepared or failed query is never a successful analysis.
+
+To inspect container logs:
 
 ```powershell
 az containerapp logs show -n <app> -g <resource group> --tail 100 --format text
 ```
 
-Look for `POST /mcp ... 401` (client not signed in), `Power BI MCP error` lines (the hosted
-server's message, including DAX syntax errors), and `DAX generation failed` (Foundry). The gateway
-never logs tokens or result rows.
+Use the result's `request_id` to locate its status, duration and attempt count.
+See [administration](administration.md) for persistent storage, generation modes and live checks.

@@ -10,6 +10,10 @@ architecture; this file is for working in the code.
 | Path | Role |
 |---|---|
 | `powerbi_mcp/server.py` | FastMCP app: AzureProvider OAuth proxy, tools, prompts, resources, `/healthz` |
+| `powerbi_mcp/analysis.py` | Shared analyze/generate/execute/recipe/diagnostic workflows |
+| `powerbi_mcp/discovery.py` | Per-user bounded caches, discovery and query-access checks |
+| `powerbi_mcp/authoring.py` | Private-folder init and local/live schema validation |
+| `powerbi_mcp/evaluation.py` | Private expected-answer regression cases via user OAuth |
 | `powerbi_mcp/config.py` | Settings from `PBIMCP_*` env vars / `.env` |
 | `powerbi_mcp/fabric.py` | Fabric REST: workspaces and semantic models the user can open |
 | `powerbi_mcp/hosted_mcp.py` | Client for Microsoft's hosted Power BI MCP (schema, DAX execution, report metadata) |
@@ -33,7 +37,8 @@ uv venv .venv --python 3.11
 uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m powerbi_mcp                 # http://localhost:8000/mcp
-.venv/Scripts/python.exe scripts/smoke_test.py "question"
+.venv/Scripts/python.exe scripts/smoke_test.py --generate
+.venv/Scripts/python.exe -m powerbi_mcp validate skills
 .\deploy\deploy_to_azure.ps1 -AcrName <yourUniqueRegistry>                 # example skills, source build
 .\deploy\deploy_to_azure.ps1 -Profile C:\deployments\<org>\deploy\profile.json   # private skills + names
 ```
@@ -59,8 +64,9 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 - Keep public examples fictional (Contoso Retail) and free of any real organisation's terms. See
   `docs/private-skills.md` for one codebase with private skill folders and deployment profiles.
   Skills are deployment-wide, not permission-filtered.
-- One replica: the proxy stores registered clients and encrypted upstream tokens on local disk.
-  Add a `client_storage` backend before scaling out.
+- One replica: optional encrypted `client_storage` persists on a mounted directory (Azure Files in
+  the deployment script). Keep the signing key and mount stable. This backend has not been validated
+  for multi-replica concurrency; do not scale out without a separate storage/concurrency review.
 
 ## Deploy gotchas already handled in the script (do not "simplify" them away)
 

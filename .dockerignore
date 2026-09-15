@@ -3,6 +3,7 @@
 .env.*
 .local/
 .fastmcp/
+.oauth-state/
 .git/
 .pytest_cache/
 __pycache__/

@@ -10,6 +10,7 @@
 | [Connect ChatGPT](connect/chatgpt.md) | Your organisation uses ChatGPT with custom connectors |
 | [Connect other agents](connect/other-agents.md) | Foundry Agent Service, Copilot Studio, your own agent code |
 | [Usage guidelines](usage-guidelines.md) | Before your first questions: what the tools do, how to ask, how to verify a number |
+| [Workflows](workflows.md) | Question and report analysis, follow-up context, executable recipes and result statuses |
 | [Troubleshooting](troubleshooting.md) | Sign-in loops, "no models", access errors, wrong numbers |
 
 **For the people who run it**

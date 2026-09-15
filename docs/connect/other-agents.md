@@ -9,7 +9,8 @@ the discovery documents clients need:
 | `/.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414) |
 | `/register` | Dynamic client registration (RFC 7591) |
 | `/authorize`, `/token` | Authorization code + PKCE, refresh tokens |
-| `/healthz` | Liveness, lists the recipes and curated model count |
+| `/` | Connection instructions without private model metadata |
+| `/healthz` | Minimal public liveness: `{"status":"ok"}` |
 
 Any client that implements the MCP authorization specification connects like the ones in the other
 guides. An unauthenticated call to `/mcp` returns `401` with a `WWW-Authenticate` header that names
@@ -22,7 +23,7 @@ secret up front. Register one client on the gateway yourself and paste the resul
 
 ```bash
 curl -s https://<host>/register -H "Content-Type: application/json" -d '{
-  "client_name": "Foundry finance agent",
+  "client_name": "Foundry data agent",
   "redirect_uris": ["https://<the platform''s documented callback URL>"],
   "grant_types": ["authorization_code", "refresh_token"],
   "token_endpoint_auth_method": "none"
@@ -34,7 +35,7 @@ OAuth URLs and `access_as_user` as the scope. For Foundry Agent Service, choose 
 **OAuth identity passthrough** and **custom OAuth**, so every user of the agent signs in
 themselves; a shared identity would bypass Power BI's per-user permissions and is not supported by
 the gateway. Registrations live in the gateway's client store; after a redeploy that wipes the
-store (single-replica deployments), register again.
+store, register again. Default Azure deployment now persists this store; see [administration](../administration.md).
 
 ## From your own code
 
@@ -50,8 +51,20 @@ async with Client("https://<host>/mcp", auth=OAuth("https://<host>/mcp")) as cli
 
 The first run opens a browser for the Microsoft sign-in; tokens are cached locally afterwards.
 `scripts/check_gateway.py` in the repository is a complete example, including a probe query.
+For structured tools, FastMCP may return a generated Pydantic object in `.data`. Use
+`powerbi_mcp.client_results.tool_data(result)` to normalize both typed and dictionary responses
+before indexing fields; this helper is used by the setup and evaluation commands.
 
 ## Tool contract
+
+Start with [workflows and result statuses](../workflows.md). The schemas returned by MCP `tools/list`
+are authoritative. The original tools remain available; `execute_dax` retains upstream result keys,
+and `generate_dax` retains legacy error fields while adding structured status, evidence and recovery actions.
+
+New tools: `analyze`, `search_semantic_models`, `get_model_context`, `search_schema`,
+`get_dimension_values`, `run_recipe`, `diagnose_connection`. All Power BI tools are annotated read-only.
+
+The legacy surface, with its original required arguments:
 
 | Tool | Input | Output |
 |---|---|---|
@@ -63,5 +76,6 @@ The first run opens a browser for the Microsoft sign-in; tokens are cached local
 | `generate_dax` | `model_id`, `question`, `execute`, `max_rows`, `chat_history` | `{dax, explanation, assumptions, result?, execution_error?, repair_error?, repaired_after?}` |
 | `get_report_metadata` | `report_id` | pages, visuals, bindings, filters |
 
-All tools raise a readable error when Power BI refuses the user (no Build permission, no licence,
-expired sign-in); nothing runs under a service identity.
+Lower-level tools raise readable MCP errors. Analysis tools return `status=failed` with a typed
+`error` and recovery `action`; always inspect status before interpreting rows. Nothing runs under
+a shared Power BI identity.

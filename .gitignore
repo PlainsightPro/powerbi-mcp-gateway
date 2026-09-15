@@ -1,5 +1,6 @@
 .venv/
 .env
+.oauth-state/
 .env.*
 !.env.example
 __pycache__/

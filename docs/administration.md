@@ -1,69 +1,101 @@
 # Administration
 
-## Prerequisites in the Fabric / Power BI tenant
+## Tenant and model access
 
-| Setting (admin portal, tenant settings) | Required state |
+Enable the Power BI MCP endpoint for the intended users in the Fabric tenant settings. Models
+must be in a workspace supported by the hosted endpoint (Premium Per User, Premium or Fabric
+capacity), with XMLA access enabled. Users need the corresponding licence and Build permission.
+See Microsoft's [hosted MCP documentation](https://learn.microsoft.com/en-us/power-bi/developer/mcp/remote-mcp-server-tools)
+for current prerequisites; the upstream endpoint is a preview service.
+
+Workspace discovery and query access are separate. A model shared directly can be missing from
+workspace discovery; `search_semantic_models(verify_access=true)` checks matching curated
+candidates, or the user can supply its id. Every schema and query uses that user's OBO token.
+
+## Deployment modes
+
+Install Python 3.11+ dependencies and PowerShell 7, then validate locally:
+
+```powershell
+.\deploy\deploy_to_azure.ps1 -Profile C:\deployments\contoso\deploy\profile.json -ValidateOnly
+```
+
+This reads the profile, checks timezone and skills, and exits before resolving Azure CLI.
+The deployment uses the signed-in Azure CLI subscription. Explicit parameters override profile
+values; unknown profile keys fail. Use separate resource names and Entra app names per deployment.
+
+| Mode or parameter | Behavior |
 |---|---|
-| Users can use the Power BI Model Context Protocol server endpoint (preview) | Enabled for the users of the gateway |
-| Semantic Model Execute Queries REST API | Enabled |
-| Allow XMLA endpoints and Analyze in Excel with on-premises semantic models | Enabled (read at least) |
+| Default | Provision Entra application, Foundry model, registry, Container Apps and Azure Files |
+| `-FoundryEndpoint https://... -ModelName <deployment-name>` | Use an existing generation deployment; skip Foundry provisioning |
+| `-FoundryResourceId <Azure-resource-id>` | With an existing endpoint, assign the app's identity the OpenAI User role on that resource |
+| `-DisableGeneration` | No Foundry resource or generation calls; analysis returns context for the client to write DAX |
+| `-SkipFoundry` | Keep an already-provisioned managed Foundry resource; does not disable generation |
+| `-SkipBuild` | Keep the existing container image; skills changes require a build |
+| `-EngineImage <pinned-tag-or-digest>` | Layer selected skills onto a published engine; empty builds this checkout |
+| `-TimeZone Europe/Brussels` | Resolve relative dates in an IANA timezone |
+| `-RotateSecret` | Issue a new Entra client secret and update the container app |
+| `-ResetSessions` | Rotate the gateway signing key and invalidate existing sessions |
+| `-EphemeralOAuthStorage` | Opt out of persistent OAuth state; clients may need to reconnect on redeploy |
 
-Workspaces must be on **Premium Per User, Premium or Fabric capacity**; that is where XMLA and the
-hosted MCP operate. Pro-only shared workspaces are not supported.
+Existing Foundry endpoints use managed identity; without a resource id, grant access to the app's
+identity yourself. The application also supports `PBIMCP_FOUNDRY_API_KEY` as a runtime alternative,
+but the deploy script does not store such a key. With managed Foundry provisioning, changes to
+model name, version and capacity are reconciled rather than silently ignored.
 
-Users need a licence matching the workspace (PPU for PPU workspaces) and **Build** permission on
-every semantic model they should be able to query. Build is granted per model (**Manage
-permissions** on the model) or through a workspace role of Contributor or higher. The gateway lists
-models by workspace access and Power BI enforces Build when a schema or query is requested.
+Deployment prints a liveness result. A real browser OAuth check remains necessary:
+`python scripts/check_gateway.py https://<host>/mcp --model-id <id> --generate`.
+Generation checks incur a small billable request. A headless OBO check does not prove client OAuth works.
 
-## What the deploy script creates
+## Persistent sign-ins and migration
 
-| Resource | Role |
-|---|---|
-| Entra app registration (confidential client) | Signs users in for the OAuth proxy; exchanges their token on-behalf-of for Power BI. Delegated permissions on the Power BI Service API: `Dataset.Read.All`, `Workspace.Read.All`, `MLModel.Execute.All`, `Report.Read.All`; admin consent granted once |
-| Foundry resource + project + model deployment | DAX generation (`generate_dax`) |
-| Container registry | Holds the deployment's image (engine + private skills) |
-| Log Analytics + Container Apps environment + container app | Runs the gateway; system-assigned identity with **Cognitive Services OpenAI User** on the Foundry resource |
+Default deployment creates or reuses an Azure Files share and mounts it at `/mnt/gateway-oauth`.
+A stable storage account name is derived from subscription, resource group and app unless
+`OAuthStorageAccountName` is specified. The share name defaults to `gateway-oauth`.
+Storage adds Azure usage cost; use your subscription's cost estimates rather than a fixed estimate.
 
-The client secret lives only in the container app's secrets (and, with `-WriteLocalEnv`, in a local
-git-ignored `.env`). Rotate it with `-RotateSecret`; the script issues a new 2-year secret and updates
-the app. Delete superseded credentials on the app registration afterwards.
+The gateway encrypts registered clients and upstream token records using key material derived
+from the tenant id, client id and stable `PBIMCP_JWT_SIGNING_KEY`. It namespaces different key
+generations separately. Preserve the share and signing key together across restarts and deployments.
+Normal Entra client-secret rotation keeps this storage namespace; signing-key rotation intentionally
+starts a new namespace and requires sign-in again. Entra can independently expire or revoke tokens.
 
-## Controlling who can use the gateway
+An existing ephemeral deployment needs one fresh registration/sign-in when migrated; its temporary
+records are not imported. An engine version predating this feature does not use the new storage
+setting. Use a source build for unreleased changes or a release known to contain the feature.
 
-- **Coarse:** on the enterprise application, set **Assignment required** and assign users or
-  groups; everyone else cannot sign in.
-- **Fine:** Power BI permissions. A user without Build on a model gets an access error from every
-  tool that touches it; a user without workspace access does not see the model at all.
-- Revoke by removing the assignment or the Build permission; existing gateway sessions expire with
-  their refresh tokens (hours), immediately after a redeploy.
+Keep **one replica**. Persistence has been tested through store recreation locally; this does not
+establish safe multi-replica concurrency. Both initial and update deployments enforce one replica.
+The Azure Files mounting path still needs verification in your Azure environment, including network
+access from the Container Apps environment.
 
-## Monitoring
+For local use, configure `PBIMCP_OAUTH_STORAGE_DIR` to a private local directory and retain a signing
+key of at least 32 random characters. `-WriteLocalEnv` preserves the local key unless sessions are
+explicitly reset, and writes a git-ignored `.oauth-state` path.
 
-- `https://<host>/healthz` returns `{"status":"ok", "recipes":[...], "curated_models": n}`.
-- Container logs in Log Analytics (`ContainerAppConsoleLogs_CL`) or `az containerapp logs show`.
-- Foundry usage and cost in the Foundry resource's metrics; a DAX generation is roughly 10 to 20k
-  input tokens (schema plus glossary) and a few hundred output tokens.
+## Access and revocation
 
-## Cost (indicative, one deployment)
+Require assignment on the enterprise application when only selected groups may sign in.
+Manage model access and RLS in Power BI. Schemas and discovery are cached briefly per user;
+query execution always calls Power BI with the user's current token. Use explicit refresh after
+permission changes. Redeployment with persistent state is not a session revocation mechanism.
+Use the identity provider's revocation controls or `-ResetSessions` when needed.
 
-| Item | Order of magnitude |
-|---|---|
-| Container app, 0.5 vCPU / 1 GiB, one replica always on | EUR 20 to 30 per month |
-| Container registry (Basic) | EUR 5 per month |
-| Log Analytics | usually under EUR 5 per month at this log volume |
-| Foundry model | pay per token; a few euro per thousand questions with a gpt-5-mini class model |
+Skills are available deployment-wide. Separate deployments for groups whose business knowledge
+must remain separate, even if their data permissions differ.
 
-Power BI licences are the existing per-user licences; the gateway adds none.
+## Monitoring and backup
 
-## Upgrading
+`/healthz` returns only `{"status":"ok"}`; it is public liveness, not an access or generation check.
+The welcome page also contains no private model names. Authenticated `diagnose_connection`
+reports discovery, schema, query and optional generation stages without business rows.
 
-Deployments built with `-EngineImage` upgrade by changing the tag in the deployment profile and
-redeploying (see [Private skills and deployments](private-skills.md)). Deployments built from source
-rebuild with `-SkipFoundry`. A redeploy restarts the app: connected clients sign in again, because
-the OAuth proxy keeps client registrations on the replica's disk (single-replica design).
+Analysis logs include request id, model id, status, elapsed time and attempt count. Restrict
+operational logs because lower-level framework error messages can include query details.
+Monitor Container Apps health, Azure Files availability and Foundry usage.
 
-## Backups
-
-The only state worth keeping is the skills folder and the deployment profile; keep them in a
-private repository. Everything else is recreated by the script.
+Keep the private skills folder and profile in a private repository. Protect and back up OAuth
+storage and its signing key separately as sensitive state. Rotate storage-account keys through
+the environment storage configuration when required. Do not put tokens or signing keys in Git.
+After an intentional signing-key reset, old encrypted namespaces remain on the share until removed
+through your normal retention process.

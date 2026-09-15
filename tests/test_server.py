@@ -9,6 +9,8 @@ from powerbi_mcp.skills import Skills
 EXPECTED_TOOLS = {
     "list_semantic_models", "get_business_context", "get_recipe", "get_semantic_model_schema",
     "execute_dax", "generate_dax", "get_report_metadata",
+    "analyze", "search_semantic_models", "search_schema", "get_dimension_values",
+    "get_model_context", "run_recipe", "diagnose_connection",
 }
 
 
@@ -24,6 +26,9 @@ async def test_server_exposes_tools_prompts_and_resources(server, skills_dir):
     first_recipe = next(iter(skills.recipes))
     async with Client(server) as client:  # in-memory transport; HTTP auth is not in the path
         assert EXPECTED_TOOLS <= {t.name for t in await client.list_tools()}
+        for tool in await client.list_tools():
+            assert tool.annotations.read_only_hint and not tool.annotations.destructive_hint
+            assert "fabric_token" not in tool.input_schema.get("properties", {})
         # one prompt per recipe file, nothing else
         assert {p.name for p in await client.list_prompts()} == set(skills.recipes)
         assert {"skill://glossary", "skill://dax-rules", "skill://catalog"} <= {
@@ -31,7 +36,7 @@ async def test_server_exposes_tools_prompts_and_resources(server, skills_dir):
         assert "skill://recipes/{name}" in {str(t.uri_template) for t in await client.list_resource_templates()}
 
         recipe = await client.call_tool("get_recipe", {"name": first_recipe})
-        assert recipe.content[0].text == skills.recipes[first_recipe]
+        assert recipe.content[0].text.startswith(skills.recipes[first_recipe])
         context = (await client.call_tool("get_business_context", {})).content[0].text
         assert skills.glossary.strip().splitlines()[0] in context
         assert all(name in context for name in skills.recipes)

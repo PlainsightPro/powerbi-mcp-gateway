@@ -12,11 +12,17 @@ contoso-powerbi-gateway/            private
 |   |-- glossary.md
 |   |-- dax-rules.md
 |   |-- catalog.yaml
+|   |-- models/*.md                 optional per-model context
 |   `-- recipes/
-|       `-- *.md
+|       |-- *.md
+|       `-- *.yaml                  optional executable definitions
 `-- deploy/
     `-- profile.json                parameters of deploy_to_azure.ps1, SkillsDir relative to this file
 ```
+
+Create a private folder with `python -m powerbi_mcp init C:\deployments\contoso`, then fill its
+profile and business definitions. `init --gateway https://<host>/mcp` can import model metadata
+through your sign-in. Imported names are a starting point; the model owner must review meaning.
 
 Deploying is one command from a checkout of the public repository:
 
@@ -28,7 +34,8 @@ git clone https://github.com/PlainsightPro/powerbi-mcp-gateway
 The script stages a temporary build folder with **only** the runtime code and the selected skills
 (`deploy/build_context.ps1`), so no `.env`, Git history or private notes ever reach the image; the
 image itself is pushed to the deployment's own registry. See `deploy/profiles/example.json` for
-every key.
+the supported deployment settings. Only `recipes/*.md`, `recipes/*.yaml` and `models/*.md`
+are copied in addition to the four required files. Schema snapshots and evaluation cases stay outside the image.
 
 ## Tracking the engine without a fork
 
@@ -36,7 +43,7 @@ Two ways to combine engine and skills:
 
 | Mode | How | Use when |
 |---|---|---|
-| **Engine image** (`EngineImage` in the profile) | The build is a two-line Dockerfile: `FROM ghcr.io/plainsightpro/powerbi-mcp-gateway:<tag>` plus `COPY skills/`. No Python is built; the deployment pins a released engine version | Customers and any deployment that should only move when you decide |
+| **Engine image** (`EngineImage` in the profile) | The build starts from the pinned engine, removes inherited example skills and copies the selected bundle. No Python is built | Customers and any deployment that should only move when you decide |
 | **Source build** (no `EngineImage`) | The checkout's code is built together with the skills | Development, or a deployment that needs an unreleased change |
 
 Releases: pushing a tag `vX.Y.Z` to the public repository runs the tests and publishes
@@ -46,11 +53,12 @@ package **private** on its first publish; an organisation owner makes it public 
 pull it anonymously. Until then `-EngineImage` builds fail with an authentication error and you use
 a source build. Upgrading a deployment is changing the tag in its profile and running the deploy
 script again; rolling back is the reverse. Skills change independently: edit, redeploy with the
-same tag.
+same tag. Use a published version tag or SHA256 digest; `latest` is rejected to make upgrades deliberate.
+A blank engine image builds the current source. Validate with the same engine version you plan to deploy.
 
 This gives one place to develop (the public repository, with the example skills and the test suite)
 and as many deployments as you have organisations, each with its own Entra app, registry, container
-app, Foundry resource and skills, each upgraded on its own schedule.
+app, OAuth storage and skills, with optional dedicated or existing Foundry generation, each upgraded on its own schedule.
 
 ## What stays private
 
