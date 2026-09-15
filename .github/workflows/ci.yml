@@ -14,7 +14,7 @@ jobs:
         python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --frozen --python ${{ matrix.python }}
@@ -50,6 +50,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - run: uv export --frozen --no-dev --no-emit-project -o requirements-export.txt
       - run: uvx --with pip pip-audit --no-deps -r requirements-export.txt
