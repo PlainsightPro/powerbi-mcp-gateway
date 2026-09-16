@@ -14,6 +14,11 @@ from pathlib import Path
 
 from .config import DEFAULT_SKILLS_DIR
 
+# Libraries that narrate every HTTP exchange at INFO: the Azure SDK dumps request and response
+# headers for each table read the OAuth state store makes, which would bury the one-line-per-call
+# tool log (observability.py) that support relies on. They speak only when the level is DEBUG.
+CHATTY_LOGGERS = ("azure", "httpx", "httpcore")
+
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(
@@ -22,6 +27,9 @@ def configure_logging(level: str) -> None:
         stream=sys.stdout,
         force=True,
     )
+    library_level = logging.DEBUG if level.upper() == "DEBUG" else logging.WARNING
+    for name in CHATTY_LOGGERS:
+        logging.getLogger(name).setLevel(library_level)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -74,21 +74,31 @@ class Catalog:
 
     def merge(self, accessible: list[SemanticModelRef]) -> list[dict]:
         """Only models the user can reach are returned; curated ones come first and carry context."""
-        rows: list[dict] = []
-        for ref in accessible:
-            entry = self.get(ref.id)
-            rows.append(
-                {
-                    "id": ref.id,
-                    "name": entry.name if entry else ref.name,
-                    "workspace": ref.workspace_name,
-                    "curated": entry is not None,
-                    "description": (entry.description if entry else ref.description).strip(),
-                    "data_scope": entry.data_scope if entry else "",
-                    "default_date_table": entry.default_date_table if entry else "",
-                    "key_measures": list(entry.key_measures) if entry else [],
-                    "recipes": list(entry.recipes) if entry else [],
-                }
-            )
+        rows = [self._row(ref, self.get(ref.id)) for ref in accessible]
+        return self.sort(rows)
+
+    def shared_row(self, entry: CatalogEntry) -> dict:
+        """A curated model the user reaches through a direct share: the workspace API never lists
+        it, so the workspace name comes from the catalog and the row says how it was found."""
+        ref = SemanticModelRef(entry.id, entry.name, "", entry.workspace, entry.description)
+        return self._row(ref, entry, shared_directly=True)
+
+    @staticmethod
+    def sort(rows: list[dict]) -> list[dict]:
         rows.sort(key=lambda r: (not r["curated"], r["workspace"].lower(), r["name"].lower()))
         return rows
+
+    @staticmethod
+    def _row(ref: SemanticModelRef, entry: CatalogEntry | None, shared_directly: bool = False) -> dict:
+        return {
+            "id": ref.id,
+            "name": entry.name if entry else ref.name,
+            "workspace": ref.workspace_name,
+            "curated": entry is not None,
+            "shared_directly": shared_directly,
+            "description": (entry.description if entry else ref.description).strip(),
+            "data_scope": entry.data_scope if entry else "",
+            "default_date_table": entry.default_date_table if entry else "",
+            "key_measures": list(entry.key_measures) if entry else [],
+            "recipes": list(entry.recipes) if entry else [],
+        }
