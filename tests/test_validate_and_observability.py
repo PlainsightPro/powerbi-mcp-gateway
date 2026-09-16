@@ -10,6 +10,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+from powerbi_mcp.__main__ import CHATTY_LOGGERS, configure_logging
 from powerbi_mcp.__main__ import main as cli
 from powerbi_mcp.config import load_settings
 from powerbi_mcp.observability import describe_arguments
@@ -96,3 +97,12 @@ def test_every_setting_is_documented_in_env_example():
 
     missing = [f"PBIMCP_{name.upper()}" for name in Settings.model_fields if f"PBIMCP_{name.upper()}" not in example]
     assert not missing, f".env.example does not mention {missing}"
+
+
+def test_configure_logging_keeps_http_libraries_quiet_unless_debugging():
+    """The tool-call log must not drown in Azure SDK header dumps at the default level."""
+    configure_logging("info")
+    assert logging.getLogger().level == logging.INFO
+    assert all(logging.getLogger(n).level == logging.WARNING for n in CHATTY_LOGGERS)
+    configure_logging("debug")
+    assert all(logging.getLogger(n).level == logging.DEBUG for n in CHATTY_LOGGERS)

@@ -101,7 +101,12 @@ def build_server(
         """List the Power BI semantic models the signed-in user can open. Call this first and use
         the returned `id` in every other tool; never guess or recall a model id. Curated models come
         first with their description, data scope, default date table, key measures and recipes.
-        Set include_uncurated=false to see only the curated models."""
+        A curated model shared with the user directly (no workspace membership) is included after a
+        query-access check and carries shared_directly=true; a short list, even a single entry, is
+        normal for such a user. Only uncurated models need workspace membership to appear: when the
+        user names a model that is missing, ask for its id from the Power BI URL (.../datasets/<id>)
+        and use that id with the other tools. Set include_uncurated=false to see only the curated
+        models."""
         return await gateway.list_models(current_user_key(), fabric_token, include_uncurated)
 
     @mcp.tool(name="get_business_context")

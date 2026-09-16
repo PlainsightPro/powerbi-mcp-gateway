@@ -8,6 +8,12 @@ major version.
 
 ### Tools
 
+- `list_semantic_models` also lists curated models the user reaches through a direct share
+  (no workspace role): Fabric's workspace listing never shows those, so every curated model that
+  is missing from it is probed with a data-free query as the user and listed, marked
+  `shared_directly: true`, when the query is allowed. Each row now carries `shared_directly`.
+  Refusals the hosted server phrases in prose ("does not have permission") are now reported as
+  the missing Build permission, like a 401/403.
 - `remember`, `recall`, `forget`: notes users attach to one semantic model (a correction, a trap,
   the measure for a recurring question). A memory follows the model: the gateway re-checks with
   the user's own token that Power BI lets them read the model before every read or write, so
@@ -17,6 +23,9 @@ major version.
 
 ### Operations
 
+- The container log keeps the Azure SDK, httpx and httpcore at WARNING unless
+  `PBIMCP_LOG_LEVEL=debug`: the OAuth state store's table reads no longer bury the one-line
+  tool-call log.
 - The OAuth proxy's state (registered clients, encrypted tokens) can live in an Azure Table
   (`PBIMCP_STATE_STORAGE_ACCOUNT`); the deploy script creates the storage account and grants the
   app identity. A redeploy no longer signs every user out.

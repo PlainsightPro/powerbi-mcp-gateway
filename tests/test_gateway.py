@@ -17,7 +17,7 @@ from fastmcp.exceptions import ToolError
 from powerbi_mcp.catalog import Catalog
 from powerbi_mcp.config import load_settings
 from powerbi_mcp.dax_generator import DaxGenerator
-from powerbi_mcp.gateway import Gateway, TtlCache
+from powerbi_mcp.gateway import ACCESS_PROBE, Gateway, TtlCache
 from powerbi_mcp.skills import Skills
 
 SCHEMA = {
@@ -42,17 +42,30 @@ def _sse(payload: dict) -> httpx.Response:
 
 
 class HostedStub:
-    """Answers hosted-MCP tool calls by name; DAX in `failing` gets the plain-text engine error."""
+    """Answers hosted-MCP tool calls by name; DAX in `failing` gets the plain-text engine error.
+    Models in `refused` are answered with a 403, those in `refused_in_prose` with the kind of text
+    the hosted server writes when the user lacks Build permission."""
 
-    def __init__(self, failing: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        failing: set[str] | None = None,
+        refused: set[str] | None = None,
+        refused_in_prose: set[str] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.failing = failing or set()
+        self.refused = refused or set()
+        self.refused_in_prose = refused_in_prose or set()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         name, args = body["params"]["name"], body["params"]["arguments"]
         self.calls.append((name, args))
-        if name == "GetSemanticModelSchema":
+        if args.get("artifactId") in self.refused:
+            return httpx.Response(403, text="Forbidden")
+        if args.get("artifactId") in self.refused_in_prose:
+            text = "The user does not have permission to query this semantic model."
+        elif name == "GetSemanticModelSchema":
             text = json.dumps(SCHEMA)
         elif name == "ExecuteQuery":
             dax = args["daxQueries"][0]
@@ -68,6 +81,9 @@ class HostedStub:
 
     def executed(self) -> list[str]:
         return [args["daxQueries"][0] for name, args in self.calls if name == "ExecuteQuery"]
+
+    def probed(self) -> list[str]:
+        return [args["artifactId"] for name, args in self.calls if name == "ExecuteQuery" and args["maxRows"] == 1]
 
 
 class FabricStub:
@@ -139,23 +155,48 @@ def make_gateway(settings, skills_dir, hosted=None, fabric=None, *dax: str) -> G
     )
 
 
-async def test_list_models_is_cached_per_user_and_curated_first(settings, skills_dir, curated_id):
-    fabric = FabricStub(curated_id)
-    gw = make_gateway(settings, skills_dir, fabric=fabric)
+async def test_list_models_is_cached_per_user_and_curated_first(settings, skills_dir, catalog, curated_id):
+    other_curated = {e.id for e in catalog.entries} - {curated_id}
+    fabric, hosted = FabricStub(curated_id), HostedStub(refused=other_curated)
+    gw = make_gateway(settings, skills_dir, hosted=hosted, fabric=fabric)
     rows = await gw.list_models("alice", "tok")
     assert [r["curated"] for r in rows] == [True, False]
     assert rows[0]["id"] == curated_id and rows[1]["description"] == "ad hoc"
+    assert not any(r["shared_directly"] for r in rows)
+    assert set(hosted.probed()) == other_curated, "only curated models missing from the listing are probed"
     calls_after_first = fabric.calls
     assert await gw.list_models("alice", "tok", include_uncurated=False) == rows[:1]
     assert fabric.calls == calls_after_first, "second call for the same user is served from the cache"
+    assert set(hosted.probed()) == other_curated, "the probe outcome is cached with the listing"
     await gw.list_models("bob", "tok")
     assert fabric.calls > calls_after_first, "another user gets their own listing"
+
+
+async def test_list_models_includes_curated_models_shared_directly(settings, skills_dir, catalog):
+    """A user with no workspace membership at all still sees the curated model shared with them,
+    labelled as such and with the catalog's workspace name; a refused probe leaves no trace."""
+    granted, *refused = [e.id for e in catalog.entries]
+    hosted = HostedStub(refused=set(refused))
+    gw = make_gateway(settings, skills_dir, hosted=hosted, fabric=FabricStub("no-such-model"))
+    rows = await gw.list_models("carol", "tok")
+    shared = [r for r in rows if r["shared_directly"]]
+    assert [r["id"] for r in shared] == [granted]
+    assert shared[0]["curated"] and shared[0]["workspace"] == catalog.get(granted).workspace
+    assert shared[0]["key_measures"] == list(catalog.get(granted).key_measures)
+    assert not any(r["id"] in refused for r in rows)
+    assert hosted.executed() == [ACCESS_PROBE] * len(catalog.entries), "the probe reads no data"
 
 
 async def test_list_models_maps_fabric_refusals_to_a_readable_error(settings, skills_dir, curated_id):
     gw = make_gateway(settings, skills_dir, fabric=FabricStub(curated_id, status=401))
     with pytest.raises(ToolError, match="Build permission"):
         await gw.list_models("alice", "tok")
+
+
+async def test_hosted_refusals_in_prose_name_the_missing_permission(settings, skills_dir, curated_id):
+    gw = make_gateway(settings, skills_dir, hosted=HostedStub(refused_in_prose={curated_id}))
+    with pytest.raises(ToolError, match="Build permission"):
+        await gw.execute("tok", curated_id, ["EVALUATE Orders"])
 
 
 async def test_schema_is_cached_per_user_and_model_and_carries_curated_notes(settings, skills_dir, curated_id):

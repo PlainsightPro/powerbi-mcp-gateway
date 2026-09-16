@@ -8,6 +8,9 @@ tests drive every path with `httpx.MockTransport` and a stub Responses client.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -26,6 +29,8 @@ from .hosted_mcp import HostedMcpError, HostedPowerBIMcp
 from .memory import Memories, MemoryInputError, build_memories, normalize_model_id
 from .skills import Skills
 
+logger = logging.getLogger(__name__)
+
 FOUNDRY_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 ACCESS_REFUSED = (
@@ -33,6 +38,12 @@ ACCESS_REFUSED = (
     "semantic model and a license appropriate to its workspace (Premium Per User for a PPU "
     "workspace, or the applicable Power BI license on Fabric/Premium capacity)."
 )
+# The hosted server sometimes describes a refusal in prose instead of an HTTP status.
+REFUSAL_WORDS = re.compile(r"permission|unauthori[sz]ed|forbidden|not allowed|access (?:is )?denied", re.I)
+
+# A query that touches no data: it tells whether the user may query a model at all.
+ACCESS_PROBE = 'EVALUATE ROW("probe", 1)'
+PROBE_CONCURRENCY = 4
 
 
 class TtlCache:
@@ -76,7 +87,7 @@ def as_tool_error(exc: Exception) -> ToolError:
         hint = f" Retry after {exc.retry_after:g} s." if exc.retry_after else " Retry in a minute."
         return ToolError(f"Power BI is rate-limiting the signed-in user.{hint} Details: {exc}")
     if isinstance(exc, HostedMcpError):
-        if exc.code in (401, 403):
+        if exc.code in (401, 403) or REFUSAL_WORDS.search(str(exc)):
             return ToolError(f"{ACCESS_REFUSED} Details: {exc}")
         detail = f" (code {exc.code})" if exc.code else ""
         data = f" {exc.data}" if exc.data else ""
@@ -186,8 +197,36 @@ class Gateway:
             except Exception as exc:
                 raise as_tool_error(exc) from exc
             rows = self.catalog.merge(accessible)
+            rows = self.catalog.sort(rows + await self._directly_shared(token, {r["id"].lower() for r in rows}))
             self._models_cache.set(user_key, rows)
         return rows if include_uncurated else [r for r in rows if r["curated"]]
+
+    async def _directly_shared(self, token: str, listed: set[str]) -> list[dict]:
+        """Curated models the workspace API did not return but the user can still query.
+
+        Fabric only lists workspaces the user is a member of, so a model shared with them directly
+        (an item share, the usual way a report consumer gets Build) is invisible there. Each curated
+        model missing from the listing is probed with a data-free query as the user; the ones that
+        answer are listed, the rest (no access, or an upstream hiccup) are left out. Bounded by the
+        catalog size and cached with the listing.
+        """
+        missing = [e for e in self.catalog.entries if e.id.lower() not in listed]
+        if not missing:
+            return []
+        hosted = self._hosted(token)
+        gate = asyncio.Semaphore(PROBE_CONCURRENCY)
+
+        async def probe(entry) -> dict | None:
+            async with gate:
+                try:
+                    await hosted.execute_query(entry.id, [ACCESS_PROBE], 1)
+                except Exception as exc:
+                    logger.debug("direct-share probe skipped model=%s reason=%s", entry.id, type(exc).__name__)
+                    return None
+            return self.catalog.shared_row(entry)
+
+        found = await asyncio.gather(*(probe(entry) for entry in missing))
+        return [row for row in found if row is not None]
 
     async def fetch_schema(self, user_key: str, token: str, model_id: str) -> dict:
         key = (user_key, model_id.lower())
