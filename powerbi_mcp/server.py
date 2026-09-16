@@ -97,9 +97,14 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
     async def list_semantic_models(
         include_uncurated: bool = True, refresh: bool = False, fabric_token: str = EntraOBOToken(fabric_scopes)
     ) -> list[dict]:
-        """List workspace-discoverable semantic models (query access initially unchecked).
-        Use search_semantic_models for topic search, access checks and partial discovery details.
-        refresh=true bypasses the per-user cache. Use returned ids rather than guessing."""
+        """List the semantic models the signed-in user can reach: every model in a workspace they
+        are a member of (query access initially unchecked), plus the curated models shared with
+        them directly, which are listed after a data-free query-access check and carry
+        shared_directly=true. A short list, even one entry, is normal for such a user. Only
+        uncurated models need workspace membership to appear: when the user names a model that is
+        missing, ask for its id from the Power BI URL (.../datasets/<id>) and use it with the other
+        tools. Use search_semantic_models for topic search, access checks and partial discovery
+        details. refresh=true bypasses the per-user cache. Use returned ids rather than guessing."""
         try:
             result = await service.discovery.discover(_current_user_key(), fabric_token, refresh)
             if result.status == "partial":
@@ -122,9 +127,10 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         limit: int = 25,
         fabric_token: str = EntraOBOToken(fabric_scopes),
     ) -> DiscoveryResult:
-        """Find models by name, alias, topic or measure. Lists partial discovery warnings explicitly.
-        verify_access checks query access and matching directly shared curated models as this user.
-        Use offset/limit for large catalogs; refresh bypasses the discovery cache."""
+        """Find models by name, alias, topic or measure (curated models shared directly with the
+        user included). Lists partial discovery warnings explicitly. verify_access runs a data-free
+        query on each returned model as this user and reports query_access. Use offset/limit for
+        large catalogs; refresh bypasses the discovery cache."""
         try:
             return await service.discovery.search(
                 _current_user_key(), fabric_token, query, workspace, refresh, verify_access, offset, limit

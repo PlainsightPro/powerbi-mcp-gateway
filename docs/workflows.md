@@ -28,11 +28,12 @@ verify_access=false)` returns models, match reasons, warnings, a checked timesta
 Use the returned offset for the next page; workspace accepts an exact workspace name or id.
 Search matches names, aliases, descriptions, topics and key measures.
 
-Discovery lists workspace-visible models. `query_access=unchecked` does not prove Build permission.
-Use `verify_access=true` to run a constant probe on the returned page and to check up to 20 matching
-curated models missing from workspace discovery. This can find directly shared models. It does not
-enumerate every uncatalogued model shared directly with a user. A known model id or report link
-can still be used; downstream schema and query calls enforce access.
+Discovery lists workspace-visible models plus the curated models shared directly with the user
+(probed with a constant query as the user; `shared_directly=true`). `query_access=unchecked` does
+not prove Build permission on workspace-visible rows; use `verify_access=true` to run the constant
+probe on the returned page. Discovery does not enumerate uncatalogued models shared directly with a
+user. A known model id or report link can still be used; downstream schema and query calls enforce
+access.
 
 A partial workspace scan is reported with warnings and is not cached as a complete list. Use
 `refresh=true` after fixing an access or connection issue. Discovery and schema caches are

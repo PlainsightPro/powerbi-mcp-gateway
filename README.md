@@ -169,8 +169,9 @@ the real browser sign-in.
 - Skills are deployment-wide, not filtered by the user's permissions; separate deployments for
   groups that must not share business knowledge.
 - `generate_dax` returns one query per call; executable recipes support up to 12 ordered steps.
-- Workspace discovery can miss directly shared models. Verify curated candidates or supply a known
-  model id; every schema and query request still uses the signed-in user's token.
+- Workspace discovery cannot see directly shared models; curated ones are found by probing them
+  as the user, uncurated ones need a known model id. Every schema and query request still uses the
+  signed-in user's token.
 - Query execution time is not data freshness. Completeness stays unknown unless Power BI reports it.
 
 ## License

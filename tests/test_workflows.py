@@ -149,7 +149,8 @@ async def test_non_query_failures_never_trigger_generation_repair(service, kind)
 
 
 async def test_diagnostics_without_any_model_need_attention(service):
-    service.state.refs = []
+    service.state.refs = []  # no workspace role, and the direct-share probe is refused too
+    service.state.errors.append(GatewayError("Fixture permission denied", kind="permission"))
     result = await service.diagnose("u", "t")
     assert result["status"] == "attention_required"
     assert result["checks"][-1]["name"] == "model_selection"
@@ -283,11 +284,32 @@ async def test_invalid_limits_rejected_before_upstream(service, limit):
     assert service.state.events == []
 
 
-async def test_shared_curated_models_are_checked_and_query_access_is_explicit(service):
+async def test_curated_models_shared_directly_are_listed_after_a_data_free_probe(service):
+    """No workspace role at all, one curated model shared directly: discovery lists it, says so,
+    and the probe reads no data."""
     service.state.refs = []
+    result = await service.discovery.discover("u", "t")
+    assert [(r["id"], r["shared_directly"], r["curated"]) for r in result.models] == [(MODEL, True, True)]
+    assert result.models[0]["workspace"] == "Workspace A"
+    probes = [e for e in service.state.events if e[0] == "query"]
+    assert probes == [("query", "t", MODEL, ['EVALUATE ROW("probe", 1)'], 1)]
+    cached = await service.discovery.discover("u", "t")
+    assert cached.cached and [e for e in service.state.events if e[0] == "query"] == probes
     result = await service.discovery.search("u", "t", "alias-a", verify_access=True)
     assert result.models[0]["id"] == MODEL and result.models[0]["query_access"] == "verified"
     assert result.models[0]["match_reason"].startswith("Exact")
+
+
+async def test_a_refused_probe_leaves_no_trace_and_workspace_rows_are_not_probed(service):
+    service.state.refs = []
+    service.state.errors.append(GatewayError("Fixture permission denied", kind="permission"))
+    result = await service.discovery.discover("u", "t", refresh=True)
+    assert result.models == [] and result.status == "complete"
+    service.state.refs = [SemanticModelRef(MODEL, "Fixture A", "w", "Workspace A")]
+    before = len(service.state.events)
+    result = await service.discovery.discover("u", "t", refresh=True)
+    assert [r["shared_directly"] for r in result.models] == [False]
+    assert [e for e in service.state.events[before:] if e[0] == "query"] == [], "listed models need no probe"
 
 
 async def test_dimension_lookup_validates_identifiers_and_escapes_values(service):

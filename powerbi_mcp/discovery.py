@@ -14,7 +14,7 @@ from .catalog import Catalog
 from .config import Settings
 from .contracts import DiscoveryResult
 from .errors import GatewayError, error_info
-from .fabric import FabricClient, SemanticModelRef
+from .fabric import FabricClient
 from .hosted_mcp import HostedPowerBIMcp
 from .schema import schema_body
 
@@ -46,6 +46,11 @@ class TtlCache:
 
     def remove(self, key):
         self.items.pop(key, None)
+
+
+# A query that touches no data: it tells whether the user may query a model at all.
+ACCESS_PROBE = 'EVALUATE ROW("probe", 1)'
+PROBE_CONCURRENCY = 4
 
 
 def timestamp() -> str:
@@ -100,8 +105,10 @@ class Discovery:
             warnings = client.warnings
         finally:
             await client.aclose()
+        rows = self.catalog.merge(refs)
+        rows = self.catalog.sort(rows + await self._directly_shared(token, {r["id"].lower() for r in rows}))
         result = DiscoveryResult(
-            models=self.catalog.merge(refs),
+            models=rows,
             warnings=warnings,
             checked_at=timestamp(),
             status="partial" if warnings else "complete",
@@ -111,6 +118,34 @@ class Discovery:
         if not warnings:
             self.models.set(user, result)
         return result
+
+    async def _directly_shared(self, token: str, listed: set[str]) -> list[dict]:
+        """Curated models the workspace API did not return but the user can still query.
+
+        Fabric only lists workspaces the user is a member of, so a model shared with them directly
+        (an item share, the usual way a report consumer gets Build) is invisible there. Each curated
+        model missing from the listing is probed with a data-free query as the user; the ones that
+        answer are listed, the rest (no access, or an upstream hiccup) are left out. Bounded by the
+        catalog size and cached with the listing.
+        """
+        missing = [e for e in self.catalog.entries if e.id.lower() not in listed]
+        if not missing:
+            return []
+        gate = asyncio.Semaphore(PROBE_CONCURRENCY)
+
+        async def probe(entry) -> dict | None:
+            async with gate:
+                client = self.hosted(token)
+                try:
+                    await client.execute_query(entry.id, [ACCESS_PROBE], 1)
+                except Exception:
+                    return None
+                finally:
+                    await client.aclose()
+            return self.catalog.shared_row(entry)
+
+        found = await asyncio.gather(*(probe(entry) for entry in missing))
+        return [row for row in found if row is not None]
 
     async def search(
         self,
@@ -126,35 +161,8 @@ class Discovery:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("Use limit 1..100 and offset >= 0.")
         result = await self.discover(user, token, refresh)
-        rows = result.models
-        # Directly shared curated models need not appear in the workspace API. Check only matching
-        # candidates and only on an explicit access check, bounded to 20 per request.
-        if verify_access:
-            known = {r["id"].lower() for r in rows}
-            missing = [
-                SemanticModelRef(e.id, e.name, e.workspace_id, e.workspace, e.description)
-                for e in self.catalog.entries
-                if e.id.lower() not in known
-            ]
-            candidates = self.catalog.search(self.catalog.merge(missing), query, workspace)
-            if len(candidates) > 20:
-                result.warnings.append(
-                    {"message": "Only 20 directly shared catalog candidates were checked. Narrow your search."}
-                )
-                result.status = "partial"
-            for candidate in candidates[:20]:
-                try:
-                    await self.schema(user, token, candidate["id"], refresh=True)
-                except Exception as exc:
-                    info = error_info(exc)
-                    if info.kind != "permission":
-                        result.warnings.append(
-                            {"message": "A directly shared candidate could not be checked.", "error": info.model_dump()}
-                        )
-                        result.status = "partial"
-                    continue
-                rows.append(candidate)
-        matches = self.catalog.search(rows, query, workspace)
+        # Curated models shared directly with the user are already part of discover().
+        matches = self.catalog.search(result.models, query, workspace)
         page = matches[offset : offset + limit]
         if verify_access:
             sem = asyncio.Semaphore(4)
@@ -163,7 +171,7 @@ class Discovery:
                 async with sem:
                     client = self.hosted(token)
                     try:
-                        await client.execute_query(row["id"], ['EVALUATE ROW("probe", 1)'], 1)
+                        await client.execute_query(row["id"], [ACCESS_PROBE], 1)
                         row.update(query_access="verified", access_checked_at=timestamp())
                     except Exception as exc:
                         info = error_info(exc)

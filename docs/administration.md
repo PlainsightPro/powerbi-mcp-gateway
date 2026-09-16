@@ -8,9 +8,12 @@ capacity), with XMLA access enabled. Users need the corresponding licence and Bu
 See Microsoft's [hosted MCP documentation](https://learn.microsoft.com/en-us/power-bi/developer/mcp/remote-mcp-server-tools)
 for current prerequisites; the upstream endpoint is a preview service.
 
-Workspace discovery and query access are separate. A model shared directly can be missing from
-workspace discovery; `search_semantic_models(verify_access=true)` checks matching curated
-candidates, or the user can supply its id. Every schema and query uses that user's OBO token.
+Workspace discovery and query access are separate. Fabric lists only workspaces the user is a
+member of, so a model shared with them directly is invisible there; the gateway therefore probes
+every curated model missing from that listing with a data-free query as the user and lists the
+ones that answer (`shared_directly: true`). An uncurated direct share stays invisible: curate it
+in `catalog.yaml`, or let the user supply its id. Every schema and query uses that user's OBO
+token; a probe or query refused for lack of Build permission is reported as such.
 
 ## Deployment modes
 
