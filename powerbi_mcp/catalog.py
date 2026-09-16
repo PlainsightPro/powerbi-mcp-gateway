@@ -6,12 +6,11 @@ from dataclasses import field
 from pathlib import Path
 
 import yaml
-from pydantic import ConfigDict
+from pydantic import ConfigDict, ValidationError
 from pydantic.dataclasses import dataclass
 
-from .schema import terms
-
 from .fabric import SemanticModelRef
+from .schema import terms
 
 
 @dataclass(config=ConfigDict(extra="forbid"))
@@ -40,11 +39,19 @@ class Catalog:
             raise ValueError("Catalog contains duplicate model ids.")
 
     @classmethod
-    def load(cls, path: Path) -> "Catalog":
+    def load(cls, path: Path) -> Catalog:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(raw, dict) or set(raw) - {"models"} or not isinstance(raw.get("models", []), list):
-            raise ValueError("Catalog must contain a models list and no unknown top-level keys.")
-        entries = [CatalogEntry(**item) for item in raw.get("models", [])]
+            raise ValueError(f"{path}: expected a mapping with a models list and no unknown top-level keys.")
+        entries = []
+        for index, item in enumerate(raw.get("models", []), start=1):
+            label = (item.get("name") or item.get("id") or "?") if isinstance(item, dict) else "?"
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError("expected a model mapping")
+                entries.append(CatalogEntry(**item))
+            except (ValidationError, ValueError) as exc:
+                raise ValueError(f"{path}: model #{index} ({label}): {str(exc).replace(chr(10), '; ')}") from None
         return cls(entries)
 
     @property
@@ -103,16 +110,34 @@ class Catalog:
         words = terms(query)
         matches = []
         for row in rows:
-            if workspace and workspace.casefold() not in (row["workspace"].casefold(), row.get("workspace_id", "").casefold()):
+            if workspace and workspace.casefold() not in (
+                row["workspace"].casefold(),
+                row.get("workspace_id", "").casefold(),
+            ):
                 continue
             labels = [row["id"], row["name"], *row.get("aliases", [])]
             exact = bool(query and query.casefold().strip() in [s.casefold() for s in labels])
-            searchable = " ".join([row["name"], row["description"], *row.get("aliases", []),
-                                   *row.get("topics", []), *row.get("key_measures", [])])
+            searchable = " ".join(
+                [
+                    row["name"],
+                    row["description"],
+                    *row.get("aliases", []),
+                    *row.get("topics", []),
+                    *row.get("key_measures", []),
+                ]
+            )
             overlap = words & terms(searchable)
             if query and not exact and not overlap:
                 continue
-            matches.append({**row, "match_score": 1000 if exact else len(overlap),
-                            "match_reason": "Exact name, alias or id" if exact else
-                            "Matched: " + ", ".join(sorted(overlap)) if overlap else "Available model"})
+            matches.append(
+                {
+                    **row,
+                    "match_score": 1000 if exact else len(overlap),
+                    "match_reason": "Exact name, alias or id"
+                    if exact
+                    else "Matched: " + ", ".join(sorted(overlap))
+                    if overlap
+                    else "Available model",
+                }
+            )
         return sorted(matches, key=lambda r: (-r["match_score"], not r["curated"], r["workspace"], r["name"]))

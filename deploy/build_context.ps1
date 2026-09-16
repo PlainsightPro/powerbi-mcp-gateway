@@ -21,9 +21,9 @@ function New-GatewayBuildContext([string]$AppRoot, [string]$SkillsDir, [string]$
         if ($EngineImage) {
             # COPY merges directories. Remove inherited example recipes so a private deployment
             # contains exactly its selected bundle, even when filenames differ from the examples.
-            @("FROM $EngineImage", 'RUN rm -rf /app/skills', "COPY skills/ /app/skills/") | Set-Content -Path (Join-Path $context 'Dockerfile') -Encoding ascii
+            @("FROM $EngineImage", "USER root", 'RUN rm -rf /app/skills', "COPY --chown=gateway:gateway skills/ /app/skills/", "USER gateway") | Set-Content -Path (Join-Path $context 'Dockerfile') -Encoding ascii
         } else {
-            foreach ($name in @('Dockerfile', 'requirements.txt')) {
+            foreach ($name in @('Dockerfile', 'pyproject.toml', 'uv.lock', 'LICENSE')) {
                 Copy-Item -LiteralPath (Join-Path $AppRoot $name) -Destination $context
             }
             $codeTarget = New-Item -ItemType Directory -Path (Join-Path $context 'powerbi_mcp')

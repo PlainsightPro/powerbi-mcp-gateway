@@ -16,10 +16,10 @@
   "SkillsDir": "../skills",
   "EngineImage": "",
   "TimeZone": "UTC",
-  "OAuthStorageAccountName": "",
-  "OAuthShareName": "gateway-oauth",
   "FoundryEndpoint": "",
   "FoundryResourceId": "",
   "DisableGeneration": false,
-  "EphemeralOAuthStorage": false
+  "StorageName": "",
+  "StateTableName": "mcpoauth",
+  "ReasoningEffort": "low"
 }

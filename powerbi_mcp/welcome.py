@@ -1,12 +1,13 @@
 """Small, dependency-free onboarding page. Never embeds private catalog or skill content."""
-from html import escape
+
 import json
+from html import escape
 
 
 def welcome_page(name: str, base_url: str) -> str:
-    endpoint = base_url.rstrip('/') + '/mcp'
-    config = json.dumps({'servers': {'powerbi': {'type': 'http', 'url': endpoint}}}, indent=2)
-    return f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    endpoint = base_url.rstrip("/") + "/mcp"
+    config = json.dumps({"servers": {"powerbi": {"type": "http", "url": endpoint}}}, indent=2)
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(name)} · Connect</title><style>
 :root{{color-scheme:light;--ink:#182e32;--muted:#50696c;--accent:#116b63}}*{{box-sizing:border-box}}
 body{{margin:0;background:#f5f7f3;color:var(--ink);font:17px/1.6 system-ui,sans-serif}}
@@ -28,4 +29,4 @@ code{{font-family:ui-monospace,monospace}}li{{margin:8px 0}}a{{color:var(--accen
 <p>Name the period and scope. Follow-up questions can retain them. Every analysis returns its query, assumptions and execution status.</p>
 <h2>Need help connecting?</h2><p>Ask your assistant to <strong>diagnose the Power BI connection</strong>. It checks discovery, model access and a constant query, without returning business figures.</p>
 <p><a href="/healthz">Check whether the gateway is running</a></p></article></div>
-<footer>Queries use your Power BI permissions. Ask your administrator for Build access to the models you need. The connection diagnostic checks more than this page's basic availability.</footer></main></html>'''
+<footer>Queries use your Power BI permissions. Ask your administrator for Build access to the models you need. The connection diagnostic checks more than this page's basic availability.</footer></main></html>"""

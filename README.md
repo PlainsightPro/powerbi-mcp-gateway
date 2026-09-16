@@ -104,7 +104,7 @@ Nothing about a real organisation belongs in this repository. See
 
 ## Deploy
 
-Prerequisites: Python 3.11+ with `requirements-dev.txt` installed, PowerShell 7, Azure CLI 2.78+, signed in with rights to register Entra applications
+Prerequisites: Python 3.11+ with dependencies installed using `uv sync`, PowerShell 7, Azure CLI 2.78+, signed in with rights to register Entra applications
 and grant admin consent, and Contributor on the subscription. The tenant needs the Power BI MCP
 endpoint enabled (see [docs/administration.md](docs/administration.md)).
 
@@ -119,7 +119,7 @@ endpoint enabled (see [docs/administration.md](docs/administration.md)).
 The script creates or updates, idempotently: the Entra app (confidential client, `access_as_user`
 scope, delegated Power BI permissions, admin consent), a Foundry resource with a model deployment,
 a container registry, Log Analytics, a Container Apps environment and the container app with a
-managed identity, plus Azure Files for encrypted OAuth state. It stages only runtime code and the selected skills for the build; `.env`, Git
+managed identity, plus Azure Tables for encrypted OAuth state and shared model notes. It stages only runtime code and the selected skills for the build; `.env`, Git
 history and private notes never reach the image. Re-run after changes; `-SkipFoundry` skips the
 model part, `-SkipBuild` keeps the running image. `-ValidateOnly` checks skills and profile locally.
 Use `-FoundryEndpoint` for an existing deployment, or `-DisableGeneration` for client-written DAX.
@@ -145,8 +145,7 @@ Cursor: `{"type": "http", "url": "https://<host>/mcp"}` in the MCP settings file
 ## Local development
 
 ```powershell
-uv venv .venv --python 3.11
-uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
+uv sync --python 3.11
 Copy-Item .env.example .env             # Entra app values, Foundry endpoint, optional PBIMCP_SKILLS_DIR
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m powerbi_mcp   # http://localhost:8000/mcp
@@ -164,8 +163,8 @@ the real browser sign-in.
 
 ## Known limits
 
-- Keep one replica. Deployment now mounts encrypted OAuth state on Azure Files; preserve both the
-  share and signing key across updates. This does not establish support for multiple replicas.
+- Keep one replica. Deployment preserves encrypted OAuth state in Azure Tables; retain both the
+  storage account and signing key across updates. This does not establish support for multiple replicas.
   Existing ephemeral deployments require a fresh sign-in when first migrated.
 - Skills are deployment-wide, not filtered by the user's permissions; separate deployments for
   groups that must not share business knowledge.

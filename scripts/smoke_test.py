@@ -3,7 +3,9 @@
 Run: python scripts/smoke_test.py [--model-id UUID] [--generate]
 Uses a constant probe; does not print business rows. Real client OAuth is checked by check_gateway.py.
 """
+
 from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -25,19 +27,35 @@ async def main(args):
     if not executable:
         raise RuntimeError("Azure CLI was not found.")
     result = subprocess.run(
-        [executable, "account", "get-access-token", "--resource", settings.identifier_uri,
-         "--query", "accessToken", "-o", "tsv"], capture_output=True, text=True, timeout=90)
+        [
+            executable,
+            "account",
+            "get-access-token",
+            "--resource",
+            settings.identifier_uri,
+            "--query",
+            "accessToken",
+            "-o",
+            "tsv",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
     if result.returncode or not result.stdout.strip():
         raise RuntimeError("Azure CLI sign-in failed; check az login and -PreauthorizeAzureCli.")
     from azure.identity.aio import OnBehalfOfCredential
+
     skills = Skills.load(settings.skills_dir)
     catalog = Catalog.load(settings.skills_dir / "catalog.yaml")
     skills.validate_catalog(catalog)
     service = AnalysisService(settings, skills, catalog)
     try:
         async with OnBehalfOfCredential(
-            tenant_id=settings.tenant_id, client_id=settings.client_id,
-            client_secret=settings.client_secret, user_assertion=result.stdout.strip()
+            tenant_id=settings.tenant_id,
+            client_id=settings.client_id,
+            client_secret=settings.client_secret,
+            user_assertion=result.stdout.strip(),
         ) as credential:
             token = (await credential.get_token(settings.fabric_scope)).token
             report = await service.diagnose("local-smoke-user", token, args.model_id, args.generate)
@@ -56,4 +74,4 @@ if __name__ == "__main__":
         raise SystemExit(asyncio.run(main(parser.parse_args())))
     except Exception:
         print("Check failed. Verify local configuration, sign-in and gateway prerequisites.")
-        raise SystemExit(1)
+        raise SystemExit(1) from None

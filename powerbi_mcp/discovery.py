@@ -1,11 +1,14 @@
 """Per-user discovery, schema caching and model selection."""
+
 from __future__ import annotations
 
 import asyncio
 import copy
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from .catalog import Catalog
 from .config import Settings
@@ -46,11 +49,18 @@ class TtlCache:
 
 
 def timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Discovery:
-    def __init__(self, settings: Settings, catalog: Catalog, *, fabric_factory=FabricClient, hosted_factory=HostedPowerBIMcp):
+    def __init__(
+        self,
+        settings: Settings,
+        catalog: Catalog,
+        *,
+        fabric_factory: Callable[..., Any] = FabricClient,
+        hosted_factory: Callable[..., Any] = HostedPowerBIMcp,
+    ):
         self.settings, self.catalog = settings, catalog
         self.fabric_factory, self.hosted_factory = fabric_factory, hosted_factory
         self.models = TtlCache(settings.catalog_cache_seconds, settings.cache_max_entries)
@@ -86,19 +96,33 @@ class Discovery:
         self.models.remove(user)
         client = self.fabric_factory(token, self.settings.fabric_api_url)
         try:
-            refs = await client.list_accessible_models()
+            refs = await client.list_accessible_models(allow_partial=True)
             warnings = client.warnings
         finally:
             await client.aclose()
-        result = DiscoveryResult(models=self.catalog.merge(refs), warnings=warnings, checked_at=timestamp(),
-                                 status="partial" if warnings else "complete", total_matches=len(refs))
+        result = DiscoveryResult(
+            models=self.catalog.merge(refs),
+            warnings=warnings,
+            checked_at=timestamp(),
+            status="partial" if warnings else "complete",
+            total_matches=len(refs),
+        )
         # A transiently missing workspace must never poison the user's catalogue cache.
         if not warnings:
             self.models.set(user, result)
         return result
 
-    async def search(self, user: str, token: str, query: str = "", workspace: str = "", refresh: bool = False,
-                     verify_access: bool = False, offset: int = 0, limit: int = 25) -> DiscoveryResult:
+    async def search(
+        self,
+        user: str,
+        token: str,
+        query: str = "",
+        workspace: str = "",
+        refresh: bool = False,
+        verify_access: bool = False,
+        offset: int = 0,
+        limit: int = 25,
+    ) -> DiscoveryResult:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("Use limit 1..100 and offset >= 0.")
         result = await self.discover(user, token, refresh)
@@ -107,11 +131,16 @@ class Discovery:
         # candidates and only on an explicit access check, bounded to 20 per request.
         if verify_access:
             known = {r["id"].lower() for r in rows}
-            missing = [SemanticModelRef(e.id, e.name, e.workspace_id, e.workspace, e.description)
-                       for e in self.catalog.entries if e.id.lower() not in known]
+            missing = [
+                SemanticModelRef(e.id, e.name, e.workspace_id, e.workspace, e.description)
+                for e in self.catalog.entries
+                if e.id.lower() not in known
+            ]
             candidates = self.catalog.search(self.catalog.merge(missing), query, workspace)
             if len(candidates) > 20:
-                result.warnings.append({"message": "Only 20 directly shared catalog candidates were checked. Narrow your search."})
+                result.warnings.append(
+                    {"message": "Only 20 directly shared catalog candidates were checked. Narrow your search."}
+                )
                 result.status = "partial"
             for candidate in candidates[:20]:
                 try:
@@ -119,12 +148,14 @@ class Discovery:
                 except Exception as exc:
                     info = error_info(exc)
                     if info.kind != "permission":
-                        result.warnings.append({"message": "A directly shared candidate could not be checked.", "error": info.model_dump()})
+                        result.warnings.append(
+                            {"message": "A directly shared candidate could not be checked.", "error": info.model_dump()}
+                        )
                         result.status = "partial"
                     continue
                 rows.append(candidate)
         matches = self.catalog.search(rows, query, workspace)
-        page = matches[offset:offset + limit]
+        page = matches[offset : offset + limit]
         if verify_access:
             sem = asyncio.Semaphore(4)
 
@@ -136,10 +167,20 @@ class Discovery:
                         row.update(query_access="verified", access_checked_at=timestamp())
                     except Exception as exc:
                         info = error_info(exc)
-                        row.update(query_access="unavailable" if info.kind in ("permission", "authentication") else "unchecked",
-                                   access_error=info.model_dump())
+                        row.update(
+                            query_access="unavailable"
+                            if info.kind in ("permission", "authentication")
+                            else "unchecked",
+                            access_error=info.model_dump(),
+                        )
                     finally:
                         await client.aclose()
+
             await asyncio.gather(*(check(row) for row in page))
-        return result.model_copy(update={"models": page, "total_matches": len(matches),
-                                         "next_offset": offset + limit if offset + limit < len(matches) else None})
+        return result.model_copy(
+            update={
+                "models": page,
+                "total_matches": len(matches),
+                "next_offset": offset + limit if offset + limit < len(matches) else None,
+            }
+        )

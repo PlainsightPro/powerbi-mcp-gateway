@@ -1,4 +1,5 @@
 """Exercise the actual build staging helper without Azure or private business files."""
+
 import json
 import shutil
 import subprocess
@@ -8,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-PWSH = shutil.which("pwsh")
+PWSH = shutil.which("pwsh") or ""
 pytestmark = pytest.mark.skipif(not PWSH, reason="PowerShell 7 required for deployment helper tests")
 
 
@@ -24,7 +25,7 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
     (private / "notes.txt").write_text("must-not-upload", encoding="utf-8")
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy' / 'build_context.ps1')}
+    . {ps_quote(ROOT / "deploy" / "build_context.ps1")}
     $context = New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(private)}
     try {{
         $files = @(Get-ChildItem -LiteralPath $context -Recurse -File | ForEach-Object {{ $_.FullName.Substring($context.Length + 1).Replace('\\', '/') }})
@@ -36,7 +37,9 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
     staged = json.loads(result.stdout)
     assert staged["glossary"] == "private glossary fixture"
     assert "powerbi_mcp/server.py" in staged["files"]
-    expected_recipes = {f"skills/recipes/{p.name}" for p in (ROOT / "skills" / "recipes").iterdir() if p.suffix in (".md", ".yaml")}
+    expected_recipes = {
+        f"skills/recipes/{p.name}" for p in (ROOT / "skills" / "recipes").iterdir() if p.suffix in (".md", ".yaml")
+    }
     assert expected_recipes and expected_recipes <= set(staged["files"])
     assert {f"skills/models/{p.name}" for p in (ROOT / "skills" / "models").glob("*.md")} <= set(staged["files"])
     assert not any(".env" in name or "notes.txt" in name or ".git" in name for name in staged["files"])
@@ -46,7 +49,7 @@ def test_build_upload_contains_only_runtime_and_selected_skills(tmp_path):
 def test_incomplete_skills_fail_before_build_and_cleanup_refuses_other_paths(tmp_path):
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy' / 'build_context.ps1')}
+    . {ps_quote(ROOT / "deploy" / "build_context.ps1")}
     $rejected = $false
     try {{ New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(tmp_path)} }}
     catch {{ $rejected = $_.Exception.Message -like '*missing instructions.md*' }}
@@ -63,21 +66,27 @@ def test_incomplete_skills_fail_before_build_and_cleanup_refuses_other_paths(tmp
 def test_engine_layer_replaces_inherited_examples_and_stages_only_skills():
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy/build_context.ps1')}
-    $context = New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(ROOT / 'skills')} -EngineImage 'registry/engine:v1'
+    . {ps_quote(ROOT / "deploy/build_context.ps1")}
+    $context = New-GatewayBuildContext -AppRoot {ps_quote(ROOT)} -SkillsDir {ps_quote(ROOT / "skills")} -EngineImage 'registry/engine:v1'
     try {{
         if (Test-Path (Join-Path $context 'powerbi_mcp')) {{ throw 'Engine mode staged source' }}
         Get-Content -Raw -LiteralPath (Join-Path $context 'Dockerfile')
     }} finally {{ Remove-GatewayBuildContext $context }}
     """
     result = subprocess.run([PWSH, "-NoProfile", "-Command", script], capture_output=True, text=True, check=True)
-    assert result.stdout.strip().splitlines() == ["FROM registry/engine:v1", "RUN rm -rf /app/skills", "COPY skills/ /app/skills/"]
+    assert result.stdout.strip().splitlines() == [
+        "FROM registry/engine:v1",
+        "USER root",
+        "RUN rm -rf /app/skills",
+        "COPY --chown=gateway:gateway skills/ /app/skills/",
+        "USER gateway",
+    ]
 
 
 def test_storage_mount_is_idempotent_preserves_other_settings_and_omits_secrets():
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy/configuration.ps1')}
+    . {ps_quote(ROOT / "deploy/configuration.ps1")}
     $spec = @{{properties=@{{configuration=@{{secrets=@(@{{name='jwt';value=$null}});ingress=@{{external=$true}}}};
         template=@{{volumes=@(@{{name='other'}});containers=@(@{{name='app';image='fixture:v1';
         env=@(@{{name='PBIMCP_JWT_SIGNING_KEY';secretRef='jwt'}});volumeMounts=@(@{{volumeName='other';mountPath='/other'}})}})}}}}}}
@@ -97,7 +106,7 @@ def test_storage_mount_is_idempotent_preserves_other_settings_and_omits_secrets(
 def test_model_reconciliation_and_pinned_image_validation():
     script = f"""
     $ErrorActionPreference = 'Stop'
-    . {ps_quote(ROOT / 'deploy/configuration.ps1')}
+    . {ps_quote(ROOT / "deploy/configuration.ps1")}
     $current = @{{properties=@{{model=@{{name='model';version='v1'}}}};sku=@{{name='GlobalStandard';capacity=50}}}}
     if (Test-GatewayModelUpdate $current 'model' 'v1' 50) {{ throw 'Unchanged model updated' }}
     if (-not (Test-GatewayModelUpdate $current 'model' 'v2' 50)) {{ throw 'Version change ignored' }}
@@ -113,20 +122,36 @@ def test_model_reconciliation_and_pinned_image_validation():
     subprocess.run([PWSH, "-NoProfile", "-Command", script], capture_output=True, text=True, check=True)
 
 
-@pytest.mark.parametrize("profile,success", [
-    ({"DisableGeneration": True}, True),
-    ({"FoundryEndpoint": "https://fixture.openai.azure.com"}, True),
-    ({"FoundryEndpoint": "https://fixture.openai.azure.com", "DisableGeneration": True}, False),
-    ({"FoundryResourceId": "/subscriptions/fixture/resourceGroups/fixture"}, False),
-    ({"TypoSetting": "wrong"}, False),
-    ({"TimeZone": "Invalid/Zone"}, False),
-])
+@pytest.mark.parametrize(
+    "profile,success",
+    [
+        ({"DisableGeneration": True}, True),
+        ({"FoundryEndpoint": "https://fixture.openai.azure.com"}, True),
+        ({"FoundryEndpoint": "https://fixture.openai.azure.com", "DisableGeneration": True}, False),
+        ({"FoundryResourceId": "/subscriptions/fixture/resourceGroups/fixture"}, False),
+        ({"TypoSetting": "wrong"}, False),
+        ({"TimeZone": "Invalid/Zone"}, False),
+    ],
+)
 def test_profile_preflight_runs_without_azure(tmp_path, profile, success):
     path = tmp_path / "profile.json"
     path.write_text(json.dumps({"AcrName": "fixtureacr", **profile}))
     # ValidateOnly exits before the Azure CLI is even resolved.
-    result = subprocess.run([PWSH, "-NoProfile", "-File", str(ROOT / "deploy/deploy_to_azure.ps1"),
-                             "-Profile", str(path), "-ValidateOnly", "-PythonExe", sys.executable],
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        [
+            PWSH,
+            "-NoProfile",
+            "-File",
+            str(ROOT / "deploy/deploy_to_azure.ps1"),
+            "-Profile",
+            str(path),
+            "-ValidateOnly",
+            "-PythonExe",
+            sys.executable,
+        ],
+        capture_output=True,
+        text=True,
+    )
     assert (result.returncode == 0) is success, result.stdout + result.stderr
-    if success: assert "no Azure changes made" in result.stdout
+    if success:
+        assert "no Azure changes made" in result.stdout

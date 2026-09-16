@@ -40,4 +40,9 @@ can contain error details; restrict access to operational logs.
 Skills are deployment-wide. Model-specific selection improves relevance but is not a permission
 boundary for the glossary or recipes. Separate deployments when groups must not share business knowledge.
 
+Shared model notes are available through `recall`, `remember` and `forget`. Save notes only when
+the user asks or confirms a lesson; everyone who can open that model can read them. Never store
+result rows, personal data or secrets. You can remove your own notes. Analysis includes these
+observations as context after checking your model access.
+
 See [workflows](workflows.md) for tool details and [troubleshooting](troubleshooting.md) for recovery.

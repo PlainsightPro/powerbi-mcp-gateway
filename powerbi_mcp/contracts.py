@@ -1,9 +1,13 @@
 """Client-independent contracts. Context is carried by the client, never by a shared session."""
+
 from __future__ import annotations
+
 from datetime import date
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from .errors import ErrorInfo
 
 
@@ -80,8 +84,10 @@ def result_evidence(payload: dict, row_limit: int, executed_at: str) -> ResultEv
     execution = payload.get("executionResult", payload)
     tables = execution.get("tables", []) if isinstance(execution, dict) else []
     row_count = sum(len(t.get("rows", [])) for t in tables)
+
     def flag(value):
         return next((value[k] for k in ("isTruncated", "truncated") if isinstance(value.get(k), bool)), None)
+
     root_flags = [flag(value) for value in (payload, execution) if isinstance(value, dict)]
     table_flags = [flag(t) for t in tables]
     if True in root_flags + table_flags:
@@ -90,5 +96,10 @@ def result_evidence(payload: dict, row_limit: int, executed_at: str) -> ResultEv
         completeness = "complete"
     else:
         completeness = "unknown"
-    return ResultEvidence(executed_at=executed_at, row_count=row_count, row_limit=row_limit,
-                          completeness=completeness, columns=[c for t in tables for c in t.get("columns", [])])
+    return ResultEvidence(
+        executed_at=executed_at,
+        row_count=row_count,
+        row_limit=row_limit,
+        completeness=completeness,
+        columns=[c for t in tables for c in t.get("columns", [])],
+    )

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 from .recipes import Recipe
+
+REQUIRED_FILES = ("instructions.md", "glossary.md", "dax-rules.md", "catalog.yaml")
+RECIPE_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 @dataclass
@@ -20,20 +24,34 @@ class Skills:
     model_contexts: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, skills_dir: Path) -> "Skills":
+    def load(cls, skills_dir: Path) -> Skills:
         def read(name: str) -> str:
             return (skills_dir / name).read_text(encoding="utf-8")
 
         recipes_dir = skills_dir / "recipes"
-        recipes = {
-            p.stem: p.read_text(encoding="utf-8")
-            for p in sorted(recipes_dir.glob("*.md"))
-        } if recipes_dir.exists() else {}
+        seen = set()
+        for p in sorted(recipes_dir.iterdir()) if recipes_dir.exists() else []:
+            if p.suffix not in (".md", ".yaml"):
+                continue
+            key = (p.stem.lower(), p.suffix)
+            if not RECIPE_NAME.fullmatch(p.stem.lower()):
+                raise ValueError(f"recipe file name '{p.name}' is not a valid recipe name")
+            if key in seen:
+                raise ValueError(f"recipe '{p.stem.lower()}' exists twice in {recipes_dir}")
+            seen.add(key)
+        recipes = (
+            {p.stem.lower(): p.read_text(encoding="utf-8") for p in sorted(recipes_dir.glob("*.md"))}
+            if recipes_dir.exists()
+            else {}
+        )
         workflows = {}
         for p in sorted(recipes_dir.glob("*.yaml")):
-            workflows[p.stem] = Recipe.model_validate(yaml.safe_load(p.read_text(encoding="utf-8")))
-            recipes.setdefault(p.stem, f"# {workflows[p.stem].title}\n\n{workflows[p.stem].description}\n\n"
-                               f"Execute with run_recipe(name='{p.stem}', model_id=..., parameters=...).")
+            workflows[p.stem.lower()] = Recipe.model_validate(yaml.safe_load(p.read_text(encoding="utf-8")))
+            recipes.setdefault(
+                p.stem.lower(),
+                f"# {workflows[p.stem.lower()].title}\n\n{workflows[p.stem.lower()].description}\n\n"
+                f"Execute with run_recipe(name='{p.stem}', model_id=..., parameters=...).",
+            )
         contexts = {"models/" + p.name: p.read_text(encoding="utf-8") for p in (skills_dir / "models").glob("*.md")}
         return cls(
             instructions=read("instructions.md"),

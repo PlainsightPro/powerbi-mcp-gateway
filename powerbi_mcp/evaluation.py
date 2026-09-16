@@ -1,18 +1,19 @@
 """Run private regression cases through browser OAuth; output checks, never business rows."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .contracts import AnalysisContext
 from .client_results import tool_data
+from .contracts import AnalysisContext
 from .dax_generator import validate_dax
 
 
@@ -71,7 +72,7 @@ def compare(case: Case, outcome: dict) -> list[str]:
     body = target.get("result", target.get("executionResult", target)) or {}
     tables = body.get("tables", [])
     if len(tables) != 1:
-        return issues + ["Expected exactly one result table."]
+        return [*issues, "Expected exactly one result table."]
     table = tables[0]
     rows, columns = table.get("rows", []), [c["name"] for c in table.get("columns", [])]
     expected = case.expect
@@ -101,20 +102,36 @@ async def evaluate(client, cases: list[Case]) -> dict:
     for case in cases:
         try:
             if case.dax:
-                tool, args = "execute_dax", {"model_id": case.model_id, "dax_queries": [case.dax], "max_rows": case.max_rows}
+                tool, args = (
+                    "execute_dax",
+                    {"model_id": case.model_id, "dax_queries": [case.dax], "max_rows": case.max_rows},
+                )
             elif case.recipe:
-                tool, args = "run_recipe", {"model_id": case.model_id, "name": case.recipe, "parameters": case.parameters}
+                tool, args = (
+                    "run_recipe",
+                    {"model_id": case.model_id, "name": case.recipe, "parameters": case.parameters},
+                )
             else:
-                tool, args = "generate_dax", {"model_id": case.model_id, "question": case.question,
-                    "context": case.context.model_dump(mode="json"), "max_rows": case.max_rows}
+                tool, args = (
+                    "generate_dax",
+                    {
+                        "model_id": case.model_id,
+                        "question": case.question,
+                        "context": case.context.model_dump(mode="json") if case.context else None,
+                        "max_rows": case.max_rows,
+                    },
+                )
             response = await client.call_tool(tool, args)
             issues = compare(case, tool_data(response))
         except Exception:
             # Exception bodies from upstream tools can contain queries or business values.
             issues = ["Tool call failed; use diagnose_connection or inspect the case privately."]
         results.append({"name": case.name, "status": "failed" if issues else "passed", "issues": issues})
-    return {"status": "passed" if all(r["status"] == "passed" for r in results) else "failed",
-            "checked_at": datetime.now(timezone.utc).isoformat(), "cases": results}
+    return {
+        "status": "passed" if all(r["status"] == "passed" for r in results) else "failed",
+        "checked_at": datetime.now(UTC).isoformat(),
+        "cases": results,
+    }
 
 
 def main(argv=None):
@@ -130,11 +147,14 @@ def main(argv=None):
         cases = [Case.model_validate(c) for c in raw]
         if len({c.name for c in cases}) != len(cases):
             raise ValueError("Case names must be unique.")
+
         async def run():
             from fastmcp import Client
             from fastmcp.client.auth import OAuth
+
             async with Client(args.gateway, auth=OAuth(args.gateway), timeout=240) as client:
                 return await evaluate(client, cases)
+
         report = asyncio.run(run())
         rendered = json.dumps(report, indent=2)
         if args.output:
@@ -142,5 +162,12 @@ def main(argv=None):
         print(rendered)
         return 0 if report["status"] == "passed" else 1
     except Exception:
-        print(json.dumps({"status": "failed", "error": "Could not validate or run evaluation cases. Check file shape, fixed reference dates, and gateway access."}))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": "Could not validate or run evaluation cases. Check file shape, fixed reference dates, and gateway access.",
+                }
+            )
+        )
         return 1

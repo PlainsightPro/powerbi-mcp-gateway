@@ -10,9 +10,11 @@
       2. Foundry resource (AIServices, project management on) with a Foundry project and a gpt-5
          Global Standard deployment.
       3. Container registry + image build (az acr build, no local Docker needed).
-      4. Log Analytics + Container Apps environment + the container app (system-assigned identity,
-         one replica and encrypted OAuth state on Azure Files).
-      5. Role "Cognitive Services OpenAI User" for the app identity on the Foundry resource.
+      4. Storage account + table for the OAuth proxy's state (registered clients, tokens), so a
+         redeploy does not sign every user out; the app identity gets Storage Table Data Contributor.
+      5. Log Analytics + Container Apps environment + the container app (system-assigned identity
+         that pulls from the registry with AcrPull; one replica).
+      6. Role "Cognitive Services OpenAI User" for the app identity on the Foundry resource.
 
     Run from anywhere; paths resolve relative to this script. Re-run after code changes to build and
     roll a new image. Secrets never hit the console: the client secret goes straight into a Container
@@ -42,27 +44,28 @@ param(
     [string]$EnvName = "env-powerbi-mcp",
     [string]$LogName = "log-powerbi-mcp",
     [string]$AcrName = "",        # globally unique, 5-50 alphanumerics; required here or in the profile
+    [string]$StorageName = "",    # globally unique, 3-24 lower-case alphanumerics; default derived from AcrName
+    [string]$StateTableName = "mcpoauth",
     [string]$FoundryName = "aif-powerbi-mcp",
     [string]$FoundryProject = "powerbi-mcp",
-    [string]$FoundryEndpoint = "",  # use an existing endpoint instead of provisioning Foundry
-    [string]$FoundryResourceId = "", # optional existing resource id for managed-identity role assignment
+    [string]$FoundryEndpoint = "",
+    [string]$FoundryResourceId = "",
     [string]$ModelName = "gpt-5",
     [string]$ModelVersion = "2025-08-07",
     [int]$ModelCapacity = 50,
+    [ValidateSet("minimal", "low", "medium", "high")]
+    [string]$ReasoningEffort = "low",
     [string]$EntraAppName = "Power BI MCP Server",
     [string]$SkillsDir = "", # defaults to the public example skills; pass the private folder for production
     [string]$ServerName = "Power BI MCP Gateway",
     [string]$TimeZone = "UTC",
-    [string]$OAuthStorageAccountName = "", # empty derives a stable name per app; Azure Files stores encrypted OAuth state
-    [string]$OAuthShareName = "gateway-oauth",
-    [string]$PythonExe = "",       # defaults to the repository venv, then python on PATH
+    [string]$PythonExe = "",
+    [switch]$DisableGeneration,
+    [switch]$ResetSessions,
+    [switch]$ValidateOnly,
     [string]$ImageTag = (Get-Date -Format "yyyyMMdd-HHmm"),
     [string]$OwnerTag = "",   # Azure Policy requires tag 'Owner' on resource groups; defaults to the signed-in user
     [switch]$SkipFoundry,
-    [switch]$DisableGeneration,
-    [switch]$EphemeralOAuthStorage,
-    [switch]$ResetSessions,
-    [switch]$ValidateOnly,
     [switch]$SkipBuild,
     [switch]$RotateSecret,
     [switch]$PreauthorizeAzureCli,
@@ -101,10 +104,16 @@ if ($DisableGeneration -and ($FoundryEndpoint -or $FoundryResourceId)) {
 if ($FoundryResourceId -and -not $FoundryEndpoint) { throw 'FoundryResourceId requires FoundryEndpoint.' }
 if ($FoundryEndpoint -and (-not [uri]::IsWellFormedUriString($FoundryEndpoint, [UriKind]::Absolute) -or
     ([uri]$FoundryEndpoint).Scheme -ne 'https')) { throw 'FoundryEndpoint must be an absolute HTTPS URL.' }
-if ($OAuthStorageAccountName -and $OAuthStorageAccountName -notmatch '^[a-z0-9]{3,24}$') { throw 'Invalid OAuthStorageAccountName.' }
-if ($OAuthShareName -notmatch '^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$' -or $OAuthShareName.Contains('--')) { throw 'Invalid OAuthShareName.' }
 if ($AcrName -notmatch '^[a-zA-Z0-9]{5,50}$') {
     throw "-AcrName (5-50 alphanumerics, globally unique) is required, on the command line or in the profile"
+}
+if (-not $StorageName) {
+    # Storage names are 3-24 lower-case alphanumerics; derive one from the registry name and cut it to length.
+    $StorageName = ("st" + $AcrName.ToLower())
+    if ($StorageName.Length -gt 24) { $StorageName = $StorageName.Substring(0, 24) }
+}
+if ($StorageName -notmatch '^[a-z0-9]{3,24}$') {
+    throw "-StorageName must be 3-24 lower-case letters and digits (got '$StorageName')"
 }
 if (-not $SkillsDir) { $SkillsDir = Join-Path $appRoot 'skills' }
 # Validate before any Azure mutations, even for configuration-only deployments.
@@ -122,9 +131,9 @@ if (-not $PythonExe) {
 Push-Location $appRoot
 try {
     & $PythonExe -m powerbi_mcp validate $SkillsDir
-    if ($LASTEXITCODE -ne 0) { throw 'Skills validation failed. Install requirements-dev.txt in the selected Python environment and fix validation issues.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Skills validation failed. Run uv sync in the selected Python environment and fix validation issues.' }
     & $PythonExe -c 'from zoneinfo import ZoneInfo; import sys; ZoneInfo(sys.argv[1])' $TimeZone
-    if ($LASTEXITCODE -ne 0) { throw 'TimeZone must be a valid IANA timezone (install requirements.txt, including tzdata).' }
+    if ($LASTEXITCODE -ne 0) { throw 'TimeZone must be a valid IANA timezone (run uv sync to install tzdata).' }
 } finally { Pop-Location }
 if ($ValidateOnly) { Write-Host 'Profile and skills validation passed; no Azure changes made.'; return }
 $script:AzCli = (Get-Command az -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source   # never the helper below
@@ -153,6 +162,17 @@ function Invoke-AzQuiet {
     $out = & $script:AzCli @args 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($out | Where-Object { $_ -is [string] }) -join "`n"
+}
+function Grant-Role([string]$PrincipalId, [string]$Role, [string]$Scope, [string]$What) {
+    # Idempotent; a brand-new identity can take a minute to replicate, so retry a few times.
+    foreach ($attempt in 1..5) {
+        & $script:AzCli role assignment create --assignee-object-id $PrincipalId --assignee-principal-type ServicePrincipal `
+            --role $Role --scope $Scope -o none 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "$Role on $What assigned"; return $true }
+        Start-Sleep -Seconds 15
+    }
+    Write-Warning "$Role on $What could not be assigned"
+    return $false
 }
 function NewRandomHex([int]$Bytes = 32) {
     $buffer = New-Object byte[] $Bytes
@@ -236,7 +256,7 @@ $consented = $false
 foreach ($attempt in 1..5) {
     # Right after the service principal is created, the consent API can still race it
     # ("service principal name is already present"); replication settles within a minute.
-    & az ad app permission admin-consent --id $appId 2>$null | Out-Null
+    & $script:AzCli ad app permission admin-consent --id $appId 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { $consented = $true; break }
     Start-Sleep -Seconds 15
 }
@@ -265,7 +285,7 @@ if ($manageFoundry -and -not $SkipFoundry) {
     (@{ location = $Location; identity = @{ type = "SystemAssigned" }
         properties = @{ displayName = $FoundryProject; description = "Power BI MCP Gateway: DAX generation" } } |
         ConvertTo-Json -Depth 5) | Set-Content -Path $projectFile -Encoding utf8
-    $projectOut = & az rest --method PUT --uri $projectUri --headers "Content-Type=application/json" --body "@$projectFile" 2>&1
+    $projectOut = & $script:AzCli rest --method PUT --uri $projectUri --headers "Content-Type=application/json" --body "@$projectFile" 2>&1
     Remove-Item $projectFile -Force
     if ($LASTEXITCODE -eq 0) { Write-Host "project $FoundryProject ensured" }
     else { Write-Warning "Foundry project not created (the model deployment works without it): $projectOut" }
@@ -289,7 +309,7 @@ $resolvedFoundryEndpoint = $resolvedFoundryEndpoint.TrimEnd("/")
 # ---------------------------------------------------------------- 4. registry + image
 Step "Container registry $AcrName"
 if (-not (Invoke-AzQuiet acr show -n $AcrName --query name -o tsv)) {
-    Invoke-Az acr create -n $AcrName -g $ResourceGroup --sku Basic --admin-enabled true -o none | Out-Null
+    Invoke-Az acr create -n $AcrName -g $ResourceGroup --sku Basic -o none | Out-Null
 }
 $acrServer = Invoke-Az acr show -n $AcrName --query loginServer -o tsv
 $image = "$acrServer/powerbi-mcp:$ImageTag"
@@ -300,7 +320,7 @@ if (-not $SkipBuild) {
     $buildContext = New-GatewayBuildContext -AppRoot $appRoot -SkillsDir $SkillsDir -EngineImage $EngineImage
     try {
         $queued = & $script:AzCli acr build --registry $AcrName --image "powerbi-mcp:$ImageTag" --image "powerbi-mcp:latest" `
-            --file (Join-Path $buildContext "Dockerfile") --no-logs $buildContext 2>&1 | Out-String
+            --file (Join-Path $buildContext "Dockerfile") --build-arg "VERSION=$ImageTag" --no-logs $buildContext 2>&1 | Out-String
         $buildExit = $LASTEXITCODE
     } finally {
         Remove-GatewayBuildContext $buildContext
@@ -320,10 +340,17 @@ if (-not $SkipBuild) {
     if (-not $appExists) { throw '-SkipBuild requires an existing container app.' }
     $image = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query 'properties.template.containers[0].image' -o tsv
 }
-$acrUser = Invoke-Az acr credential show -n $AcrName --query username -o tsv
-$acrPass = Invoke-Az acr credential show -n $AcrName --query "passwords[0].value" -o tsv
+# ---------------------------------------------------------------- 5. OAuth proxy state
+Step "Storage account $StorageName (OAuth proxy state)"
+if (-not (Invoke-AzQuiet storage account show -n $StorageName -g $ResourceGroup --query name -o tsv)) {
+    Invoke-Az storage account create -n $StorageName -g $ResourceGroup -l $Location --sku Standard_LRS --kind StorageV2 `
+        --min-tls-version TLS1_2 --allow-blob-public-access false --allow-shared-key-access false -o none | Out-Null
+    Write-Host "created (no shared keys; the app reaches it with its identity)"
+} else { Write-Host "exists" }
+# The table is created by the gateway on first use (auto_create); creating it here as well is harmless
+# but needs a data-plane role for the deployer, so it is left to the app.
 
-# ---------------------------------------------------------------- 5. environment + container app
+# ---------------------------------------------------------------- 6. environment + container app
 Step "Log Analytics + Container Apps environment"
 Invoke-Az monitor log-analytics workspace create -g $ResourceGroup -n $LogName -l $Location -o none | Out-Null
 $lawId = Invoke-Az monitor log-analytics workspace show -g $ResourceGroup -n $LogName --query customerId -o tsv
@@ -342,68 +369,83 @@ $envVars = @(
     "PBIMCP_JWT_SIGNING_KEY=secretref:jwt-signing-key",
     "PBIMCP_FOUNDRY_ENDPOINT=$resolvedFoundryEndpoint",
     "PBIMCP_FOUNDRY_DEPLOYMENT=$ModelName",
-    "PBIMCP_FOUNDRY_REASONING_EFFORT=low",
+    "PBIMCP_FOUNDRY_REASONING_EFFORT=$ReasoningEffort",
+    "PBIMCP_STATE_STORAGE_ACCOUNT=$StorageName",
+    "PBIMCP_STATE_TABLE_NAME=$StateTableName",
     "PBIMCP_TIMEZONE=$TimeZone"
 )
+# The ingress host name is deterministic (<app>.<environment default domain>), so the app starts
+# with the right PBIMCP_BASE_URL in its first revision instead of a placeholder and a second update.
+$defaultDomain = Invoke-Az containerapp env show -n $EnvName -g $ResourceGroup --query properties.defaultDomain -o tsv
+$baseUrl = "https://$AppName.$defaultDomain"
 if (-not $appExists) {
     $jwtKey = NewRandomHex 32
+    # --registry-identity system: the app's own identity pulls the image (AcrPull is assigned by the CLI);
+    # the registry has no admin user and no password lands in the app's configuration.
     Invoke-Az containerapp create -n $AppName -g $ResourceGroup --environment $EnvName --image $image `
-        --registry-server $acrServer --registry-username $acrUser --registry-password $acrPass `
+        --registry-server $acrServer --registry-identity system `
         --system-assigned --ingress external --target-port 8000 --transport auto `
         --min-replicas 1 --max-replicas 1 --cpu 0.5 --memory 1.0Gi `
         --secrets "entra-client-secret=$clientSecret" "jwt-signing-key=$jwtKey" `
-        --env-vars @envVars "PBIMCP_BASE_URL=https://pending" -o none | Out-Null
+        --env-vars @envVars "PBIMCP_BASE_URL=$baseUrl" -o none | Out-Null
     Write-Host "created"
 } else {
     if ($clientSecret) { Invoke-Az containerapp secret set -n $AppName -g $ResourceGroup --secrets "entra-client-secret=$clientSecret" -o none | Out-Null }
     if ($ResetSessions) { Invoke-Az containerapp secret set -n $AppName -g $ResourceGroup --secrets "jwt-signing-key=$(NewRandomHex 32)" -o none | Out-Null }
-    Invoke-Az containerapp update -n $AppName -g $ResourceGroup --image $image --set-env-vars @envVars --min-replicas 1 --max-replicas 1 -o none | Out-Null
+    # Apps created by an earlier script version pull with the registry admin password. Move them to
+    # the identity (AcrPull first, so the new revision can pull), then roll the image.
+    $existingPrincipal = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query identity.principalId -o tsv
+    $acrId = Invoke-Az acr show -n $AcrName --query id -o tsv
+    $acrPull = Grant-Role $existingPrincipal "AcrPull" $acrId $AcrName
+    $registryIdentity = Invoke-AzQuiet containerapp registry list -n $AppName -g $ResourceGroup --query "[?server=='$acrServer'].identity | [0]" -o tsv
+    if ($acrPull -and $registryIdentity -ne 'system') {
+        Invoke-Az containerapp registry set -n $AppName -g $ResourceGroup --server $acrServer --identity system -o none | Out-Null
+        Write-Host "registry pull switched to the app identity"
+    }
+    Invoke-Az containerapp update -n $AppName -g $ResourceGroup --image $image --set-env-vars @envVars "PBIMCP_BASE_URL=$baseUrl" --min-replicas 1 --max-replicas 1 -o none | Out-Null
     Write-Host "updated to $image"
 }
 $fqdn = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query properties.configuration.ingress.fqdn -o tsv
-$baseUrl = "https://$fqdn"
-Invoke-Az containerapp update -n $AppName -g $ResourceGroup --set-env-vars "PBIMCP_BASE_URL=$baseUrl" -o none | Out-Null
+if ("https://$fqdn" -ne $baseUrl) { throw "Ingress host '$fqdn' differs from the expected '$AppName.$defaultDomain'; the redirect URI would be wrong" }
 
-if (-not $EphemeralOAuthStorage) {
-    Step 'Persistent encrypted OAuth storage'
-    if (-not $OAuthStorageAccountName) {
-        $storageHash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$subscription/$ResourceGroup/$AppName"))
-        $OAuthStorageAccountName = 'pbimcp' + [Convert]::ToHexString($storageHash).Substring(0,18).ToLowerInvariant()
-    }
-    if (-not (Invoke-AzQuiet storage account show -n $OAuthStorageAccountName -g $ResourceGroup --query name -o tsv)) {
-        Invoke-Az storage account create -n $OAuthStorageAccountName -g $ResourceGroup -l $Location --kind StorageV2 --sku Standard_LRS --min-tls-version TLS1_2 --allow-blob-public-access false -o none | Out-Null
-    }
-    Invoke-Az storage share-rm create -g $ResourceGroup --storage-account $OAuthStorageAccountName --name $OAuthShareName --quota 5 --enabled-protocols SMB -o none | Out-Null
-    $storageKey = Invoke-Az storage account keys list -n $OAuthStorageAccountName -g $ResourceGroup --query '[0].value' -o tsv
-    Invoke-Az containerapp env storage set -n $EnvName -g $ResourceGroup --storage-name "$AppName-oauth" --access-mode ReadWrite --azure-file-account-name $OAuthStorageAccountName --azure-file-account-key $storageKey --azure-file-share-name $OAuthShareName -o none | Out-Null
-    $appSpecification = Invoke-Az containerapp show -n $AppName -g $ResourceGroup -o json | ConvertFrom-Json -AsHashtable
-    $appSpecification = Set-GatewayStorageMount $appSpecification "$AppName-oauth"
-    $mountFile = New-TemporaryFile
-    try {
-        # JSON is valid YAML. Only volume configuration changes; exported secret placeholders are removed.
-        $appSpecification | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $mountFile -Encoding utf8
-        Invoke-Az containerapp update -n $AppName -g $ResourceGroup --yaml $mountFile -o none | Out-Null
-    } finally { Remove-Item -LiteralPath $mountFile -Force }
-} else {
-    Invoke-Az containerapp update -n $AppName -g $ResourceGroup --remove-env-vars PBIMCP_OAUTH_STORAGE_DIR -o none | Out-Null
-}
-
-if (-not $DisableGeneration -and ($manageFoundry -or $FoundryResourceId)) {
-Step 'Role: app identity -> Cognitive Services OpenAI User'
+Step "Roles for the app identity"
 $principalId = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query identity.principalId -o tsv
-$foundryId = if ($FoundryResourceId) { $FoundryResourceId } else { Invoke-Az cognitiveservices account show -n $FoundryName -g $ResourceGroup --query id -o tsv }
-$assigned = $false
-foreach ($attempt in 1..4) {   # a brand-new identity can take a moment to replicate
-    & az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal `
-        --role "Cognitive Services OpenAI User" --scope $foundryId -o none 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $assigned = $true; break }
-    Start-Sleep -Seconds 15
+$storageId = Invoke-Az storage account show -n $StorageName -g $ResourceGroup --query id -o tsv
+$tableRole = Grant-Role $principalId "Storage Table Data Contributor" $storageId $StorageName
+if (-not $tableRole) { throw "The OAuth proxy cannot reach its state table until the role exists." }
+if (-not $DisableGeneration -and ($manageFoundry -or $FoundryResourceId)) {
+    $foundryId = if ($FoundryResourceId) { $FoundryResourceId } else { Invoke-Az cognitiveservices account show -n $FoundryName -g $ResourceGroup --query id -o tsv }
+    if (-not (Grant-Role $principalId "Cognitive Services OpenAI User" $foundryId $FoundryName)) {
+        throw "The generation identity cannot access Foundry until its role is granted."
+    }
 }
-if ($assigned) { Write-Host "role assigned" } else { Write-Warning "role assignment failed; generate_dax will get 401 from Foundry until it is granted" }
+if ($appExists -and -not $SkipBuild) {
+    # The registry admin user is only needed by apps that still pull with a password; this one now pulls
+    # with its identity, so close the password path (new registries never open it).
+    $pullIdentity = Invoke-AzQuiet containerapp registry list -n $AppName -g $ResourceGroup --query "[?server=='$acrServer'].identity | [0]" -o tsv
+    if ($pullIdentity -eq 'system') { Invoke-Az acr update -n $AcrName --admin-enabled false -o none | Out-Null; Write-Host "registry admin user disabled" }
 }
 
 Step "Redirect URIs on the Entra app"
 Invoke-Az ad app update --id $appId --web-redirect-uris "$baseUrl/auth/callback" "http://localhost:8000/auth/callback" | Out-Null
+
+Step "Waiting for $baseUrl/healthz"
+# The app reads its settings and opens its stores at startup; a revision that cannot (a missing
+# role, a bad setting) never answers here, and this run fails instead of leaving a broken revision.
+$healthy = $false
+$expectedRevision = Invoke-Az containerapp show -n $AppName -g $ResourceGroup --query properties.latestRevisionName -o tsv
+foreach ($attempt in 1..30) {
+    try {
+        $readyRevision = Invoke-AzQuiet containerapp show -n $AppName -g $ResourceGroup --query properties.latestReadyRevisionName -o tsv
+        $health = Invoke-RestMethod -Uri "$baseUrl/healthz" -TimeoutSec 10
+        if ($health.status -eq 'ok' -and $readyRevision -eq $expectedRevision) { $healthy = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 10
+}
+if (-not $healthy) {
+    throw "The new revision did not answer $baseUrl/healthz within five minutes. Inspect: az containerapp logs show -n $AppName -g $ResourceGroup --tail 100"
+}
+Write-Host "Gateway liveness passed. Run scripts/check_gateway.py to verify real user OAuth and queries."
 
 # ---------------------------------------------------------------- summary
 Write-Host ""
@@ -411,8 +453,8 @@ Write-Host "Power BI MCP server deployed" -ForegroundColor Green
 Write-Host "  MCP endpoint : $baseUrl/mcp"
 Write-Host "  Health       : $baseUrl/healthz"
 Write-Host "  Entra app    : $EntraAppName ($appId)"
-Write-Host "  Foundry      : $(if ($DisableGeneration) { 'disabled; clients generate DAX' } else { "$resolvedFoundryEndpoint deployment $ModelName" })"
-Write-Host "  OAuth state  : $(if ($EphemeralOAuthStorage) { 'ephemeral' } else { "$OAuthStorageAccountName/$OAuthShareName" })"
+Write-Host "  Foundry      : $resolvedFoundryEndpoint  deployment $ModelName ($ReasoningEffort reasoning)"
+Write-Host "  State store  : $StorageName / $StateTableName"
 Write-Host "  Image        : $image$(if ($EngineImage) { "  (engine $EngineImage + skills from $SkillsDir)" })"
 Write-Host ""
 Write-Host "Claude Code   : claude mcp add --transport http powerbi $baseUrl/mcp"
@@ -424,6 +466,8 @@ if ($WriteLocalEnv) {
     $localJwtKey = $null
     if (Test-Path $envPath) {
         $existingSecret = (Get-Content $envPath | Where-Object { $_ -like "PBIMCP_CLIENT_SECRET=*" } | Select-Object -First 1) -replace "^PBIMCP_CLIENT_SECRET=", ""
+    }
+    if (Test-Path $envPath) {
         $localJwtKey = (Get-Content $envPath | Where-Object { $_ -like 'PBIMCP_JWT_SIGNING_KEY=*' } | Select-Object -First 1) -replace '^PBIMCP_JWT_SIGNING_KEY=', ''
     }
     if (-not $localJwtKey -or $ResetSessions) { $localJwtKey = NewRandomHex 32 }
@@ -434,19 +478,14 @@ if ($WriteLocalEnv) {
         "PBIMCP_CLIENT_SECRET=$secretForEnv",
         "PBIMCP_BASE_URL=http://localhost:8000",
         "PBIMCP_JWT_SIGNING_KEY=$localJwtKey",
-        "PBIMCP_OAUTH_STORAGE_DIR=$appRoot/.oauth-state",
         "PBIMCP_FOUNDRY_ENDPOINT=$resolvedFoundryEndpoint",
         "PBIMCP_FOUNDRY_DEPLOYMENT=$ModelName",
-        "PBIMCP_FOUNDRY_REASONING_EFFORT=low"
+        "PBIMCP_FOUNDRY_REASONING_EFFORT=$ReasoningEffort"
         "PBIMCP_SKILLS_DIR=$SkillsDir"
         "PBIMCP_SERVER_NAME=$ServerName"
         "PBIMCP_TIMEZONE=$TimeZone"
+        "PBIMCP_OAUTH_STORAGE_DIR=$appRoot/.oauth-state"
     ) | Set-Content -Path $envPath -Encoding utf8
     Write-Host ""
     Write-Host "Local .env written to $envPath (git-ignored)$(if (-not $secretForEnv) { ' - no client secret available; re-run with -RotateSecret' })"
 }
-try {
-    $healthResult = Invoke-RestMethod -Uri "$baseUrl/healthz" -TimeoutSec 20
-    if ($healthResult.status -ne 'ok') { throw 'Unhealthy response' }
-    Write-Host 'PASS gateway liveness. Run scripts/check_gateway.py for real user OAuth and query verification.'
-} catch { Write-Warning 'Gateway liveness is not yet healthy. Check the active revision and logs before sharing its URL.' }

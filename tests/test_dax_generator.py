@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -8,11 +9,19 @@ from powerbi_mcp.dax_generator import DaxGenerator, compact_schema, parse_genera
 SCHEMA = {
     "schema": {
         "Tables": [
-            {"Name": "Object A", "Measures": [
-                {"Name": "Metric A", "Type": "Double"},
-                {"Name": "Metric B", "Description": "Invented metric description.", "Type": "Double"}],
-             "Columns": [{"Name": "Object Key", "Type": "Text", "FormatString": "0"}]},
-            {"Name": "Selector A", "Description": "Disconnected selector.", "Columns": [{"Name": "Selector A", "Type": "Text"}]},
+            {
+                "Name": "Object A",
+                "Measures": [
+                    {"Name": "Metric A", "Type": "Double"},
+                    {"Name": "Metric B", "Description": "Invented metric description.", "Type": "Double"},
+                ],
+                "Columns": [{"Name": "Object Key", "Type": "Text", "FormatString": "0"}],
+            },
+            {
+                "Name": "Selector A",
+                "Description": "Disconnected selector.",
+                "Columns": [{"Name": "Selector A", "Type": "Text"}],
+            },
         ],
         "ActiveRelationships": [{"PK": "'Object A'[Object Key]", "FK": "'Object B'[objectKey]"}],
         "CalculationGroups": [{"Name": "Calculation A"}],
@@ -39,11 +48,17 @@ def test_parse_generation_accepts_json_and_code_fences():
 async def test_foundry_failures_have_generation_specific_recovery(status, kind):
     import httpx
     from openai import APIStatusError
+
     from powerbi_mcp.errors import GatewayError
+
     class Client:
         async def create(self, **kwargs):
-            raise APIStatusError("private provider body", response=httpx.Response(status,
-                request=httpx.Request("POST", "https://fixture.test")), body={"private": "value"})
+            raise APIStatusError(
+                "private provider body",
+                response=cast(Any, httpx.Response(status, request=httpx.Request("POST", "https://fixture.test"))),
+                body={"private": "value"},
+            )
+
     generator = DaxGenerator(Client(), "fixture", "rules")
     with pytest.raises(GatewayError) as error:
         await generator.generate("Question", SCHEMA, "", "")
@@ -52,9 +67,11 @@ async def test_foundry_failures_have_generation_specific_recovery(status, kind):
 
 async def test_invalid_generated_query_is_not_blamed_on_user_arguments():
     from powerbi_mcp.errors import GatewayError
+
     class Client:
         async def create(self, **kwargs):
             return SimpleNamespace(status="completed", output_text='{"dax":"invalid"}')
+
     with pytest.raises(GatewayError) as error:
         await DaxGenerator(Client(), "fixture", "rules").generate("Question", SCHEMA, "", "")
     assert error.value.kind == "generation"
@@ -76,16 +93,27 @@ class StubResponses:
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(output_text=json.dumps({
-            "dax": "EVALUATE SUMMARIZECOLUMNS('Object A'[Object Key], \"Value\", [Metric B])",
-            "explanation": "uses the fixture metric", "assumptions": ["current year"]}))
+        return SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "dax": "EVALUATE SUMMARIZECOLUMNS('Object A'[Object Key], \"Value\", [Metric B])",
+                    "explanation": "uses the fixture metric",
+                    "assumptions": ["current year"],
+                }
+            )
+        )
 
 
 async def test_generator_builds_grounded_prompt_and_returns_dax():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- one EVALUATE", reasoning_effort="low")
-    out = await gen.generate("why did the fixture metric change", SCHEMA, "Model: Fixture model", "Glossary text",
-                             chat_history=[{"role": "user", "content": "earlier question"}])
+    out = await gen.generate(
+        "why did the fixture metric change",
+        SCHEMA,
+        "Model: Fixture model",
+        "Glossary text",
+        chat_history=[{"role": "user", "content": "earlier question"}],
+    )
     assert out.dax.startswith("EVALUATE") and out.assumptions == ["current year"]
     call = stub.calls[0]
     assert call["model"] == "gpt-5" and call["reasoning"] == {"effort": "low"}
@@ -98,8 +126,9 @@ async def test_generator_builds_grounded_prompt_and_returns_dax():
 async def test_repair_feeds_back_the_failed_query_and_engine_error():
     stub = StubResponses()
     gen = DaxGenerator(stub, deployment="gpt-5", rules="- rules", reasoning_effort="low")
-    out = await gen.repair("vraag", SCHEMA, "notes", "glossary",
-                           failed_dax="EVALUATE ROW(1']", error="The syntax for ']' is incorrect.")
+    out = await gen.repair(
+        "vraag", SCHEMA, "notes", "glossary", failed_dax="EVALUATE ROW(1']", error="The syntax for ']' is incorrect."
+    )
     assert out.dax.startswith("EVALUATE")
     user = stub.calls[0]["input"]
     assert "Previous attempt" in user and "EVALUATE ROW(1']" in user and "syntax for ']'" in user

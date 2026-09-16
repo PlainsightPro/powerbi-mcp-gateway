@@ -11,6 +11,10 @@ architecture; this file is for working in the code.
 |---|---|
 | `powerbi_mcp/server.py` | FastMCP app: AzureProvider OAuth proxy, tools, prompts, resources, `/healthz` |
 | `powerbi_mcp/analysis.py` | Shared analyze/generate/execute/recipe/diagnostic workflows |
+| `powerbi_mcp/gateway.py` | Shared upstream clients and authorized model-note access; legacy service API |
+| `powerbi_mcp/memory.py` | Shared notes per model, with ownership checks for deletion |
+| `powerbi_mcp/state_store.py` | Encrypted Azure Table OAuth storage, with optional local directory fallback |
+| `powerbi_mcp/observability.py` | Tool-call logging without question, query or result content |
 | `powerbi_mcp/discovery.py` | Per-user bounded caches, discovery and query-access checks |
 | `powerbi_mcp/authoring.py` | Private-folder init and local/live schema validation |
 | `powerbi_mcp/evaluation.py` | Private expected-answer regression cases via user OAuth |
@@ -33,8 +37,10 @@ architecture; this file is for working in the code.
 ## Commands (Windows, PowerShell or Git Bash)
 
 ```
-uv venv .venv --python 3.11
-uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
+uv sync --python 3.11
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m powerbi_mcp                 # http://localhost:8000/mcp
 .venv/Scripts/python.exe scripts/smoke_test.py --generate
@@ -64,9 +70,11 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 - Keep public examples fictional (Contoso Retail) and free of any real organisation's terms. See
   `docs/private-skills.md` for one codebase with private skill folders and deployment profiles.
   Skills are deployment-wide, not permission-filtered.
-- One replica: optional encrypted `client_storage` persists on a mounted directory (Azure Files in
-  the deployment script). Keep the signing key and mount stable. This backend has not been validated
-  for multi-replica concurrency; do not scale out without a separate storage/concurrency review.
+- Shared notes require schema access with the user's token before any read or write. Model listing
+  is insufficient. Keep the schema cache per user and bound its lifetime so revocations take effect.
+- One replica: the deployment persists encrypted OAuth state and shared model notes in Azure Tables
+  using managed identity. Keep the storage account and signing key stable. Local directory storage is
+  optional. Do not scale out without a separate storage/concurrency review.
 
 ## Deploy gotchas already handled in the script (do not "simplify" them away)
 
@@ -78,4 +86,7 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-dev.txt
 - `az acr build` log streaming crashes on Unicode on Windows (`az.cmd` runs Python with `-I`, so
   `PYTHONUTF8` cannot help); the script queues with `--no-logs` and polls the run.
 - JSON bodies for `az rest --body` go through a temp file (`@file`), never inline.
-- `azure.identity.aio` needs `aiohttp`; it is in requirements for that reason.
+- `azure.identity.aio` needs `aiohttp`; it is an explicit dependency in pyproject.toml for that reason.
+- Registry pull and Azure Table access use managed identity; do not restore shared-password access.
+- Compute `PBIMCP_BASE_URL` from the environment domain before creation so the first revision has
+  the correct callback URL. Confirm the new revision is ready before accepting a liveness probe.

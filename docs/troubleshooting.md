@@ -8,7 +8,7 @@ model. The public `/healthz` endpoint only says whether the server process is ru
 | Sign-in never finishes | Callback blocked or opened in another browser context | Retry the client's sign-in flow and use its callback instructions |
 | `AADSTS50011` | Redirect URI mismatch | Verify `https://<host>/auth/callback` on the gateway's Entra application |
 | `authentication` or HTTP 401 from Power BI | Expired or invalid user session | Reconnect using your work account |
-| Repeated reconnects after deployment | OAuth storage missing, key changed, or ephemeral mode | Check the mount and stable signing key; initial migration requires a new sign-in |
+| Repeated reconnects after deployment | OAuth storage missing, key changed, or ephemeral mode | Check the Azure Table account, identity role and stable signing key; initial migration requires a new sign-in |
 | `permission` | Model Build access, licence or tenant settings | Have the model owner check the diagnostic's model and permissions |
 | Model missing from discovery | Direct sharing, workspace access or cached listing | Refresh; use access verification for curated models, or supply its known id/report link |
 | Discovery is `partial` | A workspace or candidate could not be checked | Read warnings, fix the affected access/service issue, then refresh |

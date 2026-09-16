@@ -1,15 +1,18 @@
 """Stable, actionable errors and bounded retries for read-only upstream requests."""
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel
 
-ErrorKind = Literal["authentication", "permission", "throttled", "unavailable", "query", "protocol", "generation", "input"]
+ErrorKind = Literal[
+    "authentication", "permission", "throttled", "unavailable", "query", "protocol", "generation", "input"
+]
 
 
 class ErrorInfo(BaseModel):
@@ -43,8 +46,13 @@ def error_info(exc: Exception) -> ErrorInfo:
         "generation": "Retry generation or use the model context to write DAX in your client.",
         "input": "Correct the supplied arguments and retry.",
     }
-    return ErrorInfo(kind=kind, message=str(exc)[:2000], retryable=kind in ("throttled", "unavailable"),
-                     retry_after_seconds=getattr(exc, "retry_after", None), action=actions[kind])
+    return ErrorInfo(
+        kind=kind,
+        message=str(exc)[:2000],
+        retryable=kind in ("throttled", "unavailable"),
+        retry_after_seconds=getattr(exc, "retry_after", None),
+        action=actions[kind],
+    )
 
 
 def retry_after(response: httpx.Response) -> float | None:
@@ -55,7 +63,7 @@ def retry_after(response: httpx.Response) -> float | None:
         return max(0.0, float(value))
     except ValueError:
         try:
-            return max(0.0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+            return max(0.0, (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds())
         except (ValueError, TypeError, OverflowError):
             return None
 
@@ -87,7 +95,8 @@ async def request_with_retry(client: httpx.AsyncClient, method: str, url: str, *
 
 def http_error(response: httpx.Response, service: str) -> GatewayError:
     status = response.status_code
-    kind: ErrorKind = {401: "authentication", 403: "permission", 429: "throttled"}.get(status, "protocol")
+    kinds: dict[int, ErrorKind] = {401: "authentication", 403: "permission", 429: "throttled"}
+    kind = kinds.get(status, "protocol")
     if status >= 500:
         kind = "unavailable"
     # Do not echo arbitrary HTML, request URLs, or upstream bodies containing query data.

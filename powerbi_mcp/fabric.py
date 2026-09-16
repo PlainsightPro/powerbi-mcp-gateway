@@ -7,11 +7,31 @@ from dataclasses import dataclass
 
 import httpx
 
-from .errors import GatewayError, http_error, request_with_retry
+from .errors import ErrorKind, GatewayError, error_info, http_error, request_with_retry
+from .hosted_mcp import retry_after_seconds
+
+DEFAULT_BASE_URL = "https://api.fabric.microsoft.com/v1"
+TIMEOUT_SECONDS = 30.0
+MAX_RETRY_WAIT_SECONDS = 10.0
 
 
-class FabricAccessError(GatewayError):
-    """The user's token was rejected by the Fabric API (expired, missing consent, no license)."""
+class FabricError(GatewayError):
+    """The Fabric API did not answer a listing request."""
+
+
+class FabricAccessError(FabricError):
+    """The user's token was rejected by the Fabric API."""
+
+    def __init__(self, message: str, *, kind: ErrorKind = "permission"):
+        super().__init__(message, kind=kind)
+
+
+class FabricThrottledError(FabricError):
+    """The Fabric API is rate-limiting this user (429) and one retry did not help."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message, kind="throttled")
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -24,37 +44,52 @@ class SemanticModelRef:
 
 
 class FabricClient:
-    """Thin async wrapper over the Fabric core REST API (workspaces and semantic models)."""
+    """Thin async wrapper over the Fabric core REST API (workspaces and semantic models).
+
+    Pass a shared `client` to reuse connections across users and calls; the token then travels as
+    a per-request header and `aclose()` leaves the shared client open.
+    """
 
     def __init__(
         self,
         user_token: str,
-        base_url: str = "https://api.fabric.microsoft.com/v1",
+        base_url: str = DEFAULT_BASE_URL,
         transport: httpx.AsyncBaseTransport | None = None,
         concurrency: int = 8,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._client = httpx.AsyncClient(
-            base_url=base_url,
-            headers={"Authorization": f"Bearer {user_token}"},
-            timeout=30.0,
-            transport=transport,
-        )
+        self._base_url = base_url.rstrip("/")
+        self._headers = {"Authorization": f"Bearer {user_token}"}
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS, transport=transport)
         self._sem = asyncio.Semaphore(concurrency)
         self.warnings: list[dict] = []
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def _get(self, path: str, params: dict[str, str]) -> httpx.Response:
+        """Bounded retries for read-only requests; preserve long Retry-After delays."""
+        async with self._sem:
+            return await request_with_retry(
+                self._client, "GET", self._base_url + path, params=params, headers=self._headers
+            )
 
     async def _get_all(self, path: str) -> list[dict]:
         """GET a Fabric list endpoint and follow `continuationToken` paging."""
         items: list[dict] = []
         params: dict[str, str] = {}
         while True:
-            async with self._sem:
-                resp = await request_with_retry(self._client, "GET", path, params=params)
+            resp = await self._get(path, params)
             if resp.status_code in (401, 403):
-                raise FabricAccessError(f"Fabric API returned HTTP {resp.status_code}.",
-                                        kind="authentication" if resp.status_code == 401 else "permission")
+                raise FabricAccessError(
+                    f"Fabric API returned HTTP {resp.status_code}.",
+                    kind="authentication" if resp.status_code == 401 else "permission",
+                )
+            if resp.status_code == 429:
+                wait = retry_after_seconds(resp)
+                raise FabricThrottledError(f"Fabric API is throttling this user (429 on {path})", retry_after=wait)
             if not resp.is_success:
                 raise http_error(resp, "Fabric API")
             body = resp.json()
@@ -70,17 +105,22 @@ class FabricClient:
     async def list_semantic_models(self, workspace_id: str) -> list[dict]:
         return await self._get_all(f"/workspaces/{workspace_id}/semanticModels")
 
-    async def list_accessible_models(self) -> list[SemanticModelRef]:
-        """Every semantic model in every workspace the user can open, as one flat list."""
-        workspaces = await self.list_workspaces()
+    async def list_accessible_models(self, *, allow_partial: bool = False) -> list[SemanticModelRef]:
+        """Every semantic model in every workspace the user can open, as one flat list.
+
+        A workspace the user can see but whose items they may not list (401/403) contributes
+        nothing. Any other failure (throttling, a 5xx) is raised, so a partial list is never
+        returned as if it were complete.
+        """
         self.warnings = []
+        workspaces = await self.list_workspaces()
 
         async def models_of(ws: dict) -> list[SemanticModelRef]:
             try:
                 models = await self.list_semantic_models(ws["id"])
             except (GatewayError, httpx.TransportError) as exc:
-                from .errors import error_info
-
+                if not allow_partial and not isinstance(exc, FabricAccessError):
+                    raise
                 self.warnings.append({"workspace_id": ws["id"], "error": error_info(exc).model_dump()})
                 return []
             return [
@@ -94,5 +134,8 @@ class FabricClient:
                 for m in models
             ]
 
-        nested = await asyncio.gather(*(models_of(ws) for ws in workspaces))
-        return [m for group in nested for m in group]
+        nested = await asyncio.gather(*(models_of(ws) for ws in workspaces), return_exceptions=True)
+        for outcome in nested:
+            if isinstance(outcome, BaseException):
+                raise outcome
+        return [m for group in nested if isinstance(group, list) for m in group]

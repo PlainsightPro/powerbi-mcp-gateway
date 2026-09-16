@@ -26,7 +26,8 @@ def test_initialize_and_reject_overwriting(tmp_path):
 @pytest.mark.parametrize("image", ["registry/image:latest", "registry/image", "registry/image:v1\nRUN bad"])
 def test_initializer_rejects_unpinned_or_invalid_images_before_writes(tmp_path, image):
     target = tmp_path / "new"
-    with pytest.raises(ValueError): initialize(target, engine_image=image)
+    with pytest.raises(ValueError):
+        initialize(target, engine_image=image)
     assert not target.exists()
 
 
@@ -43,21 +44,28 @@ def test_import_schema_validation_and_scoped_context(tmp_path):
     assert validate_folder(folder)["schema_checked"] is False
     bad = validate_folder(folder, {MODEL: {"Tables": [{"Name": "Object A"}]}})
     assert len(bad["issues"]) == 2 and bad["status"] == "failed"
-    good = validate_folder(folder, {MODEL: {"Tables": [{"Name": "Date A"}, {"Name": "Object A", "Measures": [{"Name": "Metric A"}]}]}})
+    good = validate_folder(
+        folder, {MODEL: {"Tables": [{"Name": "Date A"}, {"Name": "Object A", "Measures": [{"Name": "Metric A"}]}]}}
+    )
     assert good["status"] == "passed"
     skills = Skills.load(folder)
     assert "Selected definition" not in skills.glossary_for()
     assert "Selected definition" in skills.glossary_for(Catalog.load(catalog_path).entries[0])
 
 
-@pytest.mark.parametrize("contents", [
-    "models: []\nunknown: true", "models: [ {id: x, name: A, workspace: W, typo: bad} ]",
-    "models: [ {id: x, name: A, workspace: W}, {id: X, name: B, workspace: W} ]",
-])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "models: []\nunknown: true",
+        "models: [ {id: x, name: A, workspace: W, typo: bad} ]",
+        "models: [ {id: x, name: A, workspace: W}, {id: X, name: B, workspace: W} ]",
+    ],
+)
 def test_invalid_catalog_is_rejected(tmp_path, contents):
     path = tmp_path / "catalog.yaml"
     path.write_text(contents)
-    with pytest.raises(ValueError): Catalog.load(path)
+    with pytest.raises(ValueError):
+        Catalog.load(path)
 
 
 async def test_public_routes_hide_skills_and_mcp_requires_signin(dummy_env):
@@ -75,8 +83,19 @@ async def test_public_routes_hide_skills_and_mcp_requires_signin(dummy_env):
 
 
 def fixture_case():
-    return Case(name="constant", model_id=MODEL, dax='EVALUATE ROW("Value", 1)',
-                expect={"min_rows": 1, "max_rows": 1, "columns": ["Value"], "scalars": [{"column": "Value", "value": 1}]})
+    return Case.model_validate(
+        {
+            "name": "constant",
+            "model_id": MODEL,
+            "dax": 'EVALUATE ROW("Value", 1)',
+            "expect": {
+                "min_rows": 1,
+                "max_rows": 1,
+                "columns": ["Value"],
+                "scalars": [{"column": "Value", "value": 1}],
+            },
+        }
+    )
 
 
 def test_evaluation_detects_wrong_values_missing_columns_and_incomplete_results():
@@ -93,16 +112,21 @@ def test_evaluation_detects_wrong_values_missing_columns_and_incomplete_results(
 
 def test_question_evaluation_requires_fixed_reference_date():
     with pytest.raises(ValueError, match="reference_date"):
-        Case(name="question", model_id=MODEL, question="Question", expect={})
+        Case.model_validate({"name": "question", "model_id": MODEL, "question": "Question", "expect": {}})
 
 
 async def test_evaluation_continues_after_error_and_never_logs_values():
     calls = []
+
     class Client:
         async def call_tool(self, name, args):
             calls.append((name, args))
-            if len(calls) == 1: raise RuntimeError("Private upstream query and business value")
-            return SimpleNamespace(data={"status": "executed", "tables": [{"columns": [{"name": "Value"}], "rows": [[1]]}]})
+            if len(calls) == 1:
+                raise RuntimeError("Private upstream query and business value")
+            return SimpleNamespace(
+                data={"status": "executed", "tables": [{"columns": [{"name": "Value"}], "rows": [[1]]}]}
+            )
+
     report = await evaluate(Client(), [fixture_case(), fixture_case()])
     assert [r["status"] for r in report["cases"]] == ["failed", "passed"]
     assert "Private upstream" not in json.dumps(report) and "EVALUATE" not in json.dumps(report)

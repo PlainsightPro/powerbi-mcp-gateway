@@ -23,7 +23,9 @@ TOPN(
 ORDER BY [Change] DESC
 ```
 
-Swap 'Product'[Category] for the dimension the user cares about ('Store'[Region], 'Customer'[Segment]).
+Swap 'Product'[Category] for the dimension the user cares about ('Store'[Region],
+'Customer'[Customer Segment]). On the Inventory model use [Stock Value] with 'Warehouse'[Warehouse Name]
+and compare two month-ends rather than years.
 Run it twice (DESC and ASC) to show both the risers and the fallers.
 
 ## 2. Detail behind one mover

@@ -1,6 +1,8 @@
 """Normalize FastMCP's typed client results to portable JSON values."""
-from pydantic import TypeAdapter
+
 from typing import Any
+
+from pydantic import TypeAdapter
 
 _JSON_VALUE = TypeAdapter(Any)
 

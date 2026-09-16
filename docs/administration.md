@@ -26,7 +26,7 @@ values; unknown profile keys fail. Use separate resource names and Entra app nam
 
 | Mode or parameter | Behavior |
 |---|---|
-| Default | Provision Entra application, Foundry model, registry, Container Apps and Azure Files |
+| Default | Provision Entra application, Foundry model, registry, Container Apps and Azure Tables |
 | `-FoundryEndpoint https://... -ModelName <deployment-name>` | Use an existing generation deployment; skip Foundry provisioning |
 | `-FoundryResourceId <Azure-resource-id>` | With an existing endpoint, assign the app's identity the OpenAI User role on that resource |
 | `-DisableGeneration` | No Foundry resource or generation calls; analysis returns context for the client to write DAX |
@@ -36,7 +36,7 @@ values; unknown profile keys fail. Use separate resource names and Entra app nam
 | `-TimeZone Europe/Brussels` | Resolve relative dates in an IANA timezone |
 | `-RotateSecret` | Issue a new Entra client secret and update the container app |
 | `-ResetSessions` | Rotate the gateway signing key and invalidate existing sessions |
-| `-EphemeralOAuthStorage` | Opt out of persistent OAuth state; clients may need to reconnect on redeploy |
+| `-StorageName <account>` | Persistent OAuth and model-note storage; defaults to a name derived from the registry |
 
 Existing Foundry endpoints use managed identity; without a resource id, grant access to the app's
 identity yourself. The application also supports `PBIMCP_FOUNDRY_API_KEY` as a runtime alternative,
@@ -49,25 +49,18 @@ Generation checks incur a small billable request. A headless OBO check does not 
 
 ## Persistent sign-ins and migration
 
-Default deployment creates or reuses an Azure Files share and mounts it at `/mnt/gateway-oauth`.
-A stable storage account name is derived from subscription, resource group and app unless
-`OAuthStorageAccountName` is specified. The share name defaults to `gateway-oauth`.
-Storage adds Azure usage cost; use your subscription's cost estimates rather than a fixed estimate.
+Default deployment creates or reuses an Azure Table storage account, accessed with the app's
+managed identity. `StorageName` defaults to a name derived from `AcrName`; `StateTableName`
+defaults to `mcpoauth`. Shared model notes use a separate `mcpmemories` table in that account.
 
-The gateway encrypts registered clients and upstream token records using key material derived
-from the tenant id, client id and stable `PBIMCP_JWT_SIGNING_KEY`. It namespaces different key
-generations separately. Preserve the share and signing key together across restarts and deployments.
-Normal Entra client-secret rotation keeps this storage namespace; signing-key rotation intentionally
-starts a new namespace and requires sign-in again. Entra can independently expire or revoke tokens.
+Registered clients and upstream tokens are encrypted using a key derived from the stable
+`PBIMCP_JWT_SIGNING_KEY`. Preserve the account, table name and signing key across deployments.
+Normal Entra client-secret rotation does not change the encryption key. `-ResetSessions`
+intentionally invalidates existing sign-ins; Entra can also expire or revoke its own tokens.
 
-An existing ephemeral deployment needs one fresh registration/sign-in when migrated; its temporary
-records are not imported. An engine version predating this feature does not use the new storage
-setting. Use a source build for unreleased changes or a release known to contain the feature.
-
-Keep **one replica**. Persistence has been tested through store recreation locally; this does not
-establish safe multi-replica concurrency. Both initial and update deployments enforce one replica.
-The Azure Files mounting path still needs verification in your Azure environment, including network
-access from the Container Apps environment.
+Existing Azure Table deployments continue using the same state. A deployment migrating from
+ephemeral disk storage requires one fresh registration/sign-in because old records are not imported.
+Keep **one replica**: durable state alone does not establish safe multi-replica concurrency.
 
 For local use, configure `PBIMCP_OAUTH_STORAGE_DIR` to a private local directory and retain a signing
 key of at least 32 random characters. `-WriteLocalEnv` preserves the local key unless sessions are
@@ -92,10 +85,16 @@ reports discovery, schema, query and optional generation stages without business
 
 Analysis logs include request id, model id, status, elapsed time and attempt count. Restrict
 operational logs because lower-level framework error messages can include query details.
-Monitor Container Apps health, Azure Files availability and Foundry usage.
+Monitor Container Apps health, Azure Table availability and Foundry usage.
 
 Keep the private skills folder and profile in a private repository. Protect and back up OAuth
-storage and its signing key separately as sensitive state. Rotate storage-account keys through
-the environment storage configuration when required. Do not put tokens or signing keys in Git.
-After an intentional signing-key reset, old encrypted namespaces remain on the share until removed
-through your normal retention process.
+storage and its signing key separately as sensitive state. Azure access uses managed identity;
+the script does not configure shared storage keys. Do not put tokens or signing keys in Git.
+Use your organisation's retention and backup process for old encrypted records and model notes.
+
+## Shared model notes
+
+`recall`, `remember` and `forget` first check model access under the signed-in user's identity.
+Notes are shared with everyone who can access that model; users can delete only their own notes.
+The schema cache bounds how long revoked model access can retain note access. Analysis and model
+context include these observations after authorization. They are reference data, not instructions.

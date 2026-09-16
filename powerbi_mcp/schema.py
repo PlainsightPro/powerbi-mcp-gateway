@@ -1,5 +1,7 @@
 """Bounded schema grounding that retains relationships, formats and author metadata."""
+
 from __future__ import annotations
+
 import json
 import re
 
@@ -16,8 +18,12 @@ def schema_body(schema: dict) -> dict:
 
 
 def schema_objects(schema: dict) -> list[dict]:
-    return [{"table": t["Name"], "kind": kind[:-1].lower(), **o}
-            for t in schema_body(schema)["Tables"] for kind in ("Measures", "Columns") for o in t.get(kind, []) or []]
+    return [
+        {"table": t["Name"], "kind": kind[:-1].lower(), **o}
+        for t in schema_body(schema)["Tables"]
+        for kind in ("Measures", "Columns")
+        for o in t.get(kind, []) or []
+    ]
 
 
 def search_objects(schema: dict, query: str = "", table: str | None = None, offset: int = 0, limit: int = 50) -> dict:
@@ -27,8 +33,11 @@ def search_objects(schema: dict, query: str = "", table: str | None = None, offs
     if words:
         ranked = [r for r in ranked if r[0]]
     ranked.sort(key=lambda r: (-r[0], r[1]["table"], r[1]["Name"]))
-    return {"objects": [r[1] for r in ranked[offset:offset + limit]], "total_matches": len(ranked),
-            "next_offset": offset + limit if offset + limit < len(ranked) else None}
+    return {
+        "objects": [r[1] for r in ranked[offset : offset + limit]],
+        "total_matches": len(ranked),
+        "next_offset": offset + limit if offset + limit < len(ranked) else None,
+    }
 
 
 def compact_schema(schema: dict, max_chars: int = 60_000, *, query: str = "", tables: list[str] | None = None) -> str:
@@ -43,17 +52,28 @@ def compact_schema(schema: dict, max_chars: int = 60_000, *, query: str = "", ta
     for kind in ("ActiveRelationships", "InactiveRelationships"):
         if s.get(kind):
             core.append(kind.upper() + ":")
-            core.extend(f"  {r.get('PK')} -> {r.get('FK')}  " + json.dumps(
-                {k: v for k, v in r.items() if k not in ('PK', 'FK')}, ensure_ascii=False) for r in s[kind])
+            core.extend(
+                f"  {r.get('PK')} -> {r.get('FK')}  "
+                + json.dumps({k: v for k, v in r.items() if k not in ("PK", "FK")}, ensure_ascii=False)
+                for r in s[kind]
+            )
     for cg in s.get("CalculationGroups") or []:
         core.append(f"CALCULATION GROUP '{cg['Name']}' " + json.dumps(cg, ensure_ascii=False))
-    metadata = {k: v for k, v in s.items() if k not in ("Tables", "ActiveRelationships", "InactiveRelationships", "CalculationGroups")}
+    metadata = {
+        k: v
+        for k, v in s.items()
+        if k not in ("Tables", "ActiveRelationships", "InactiveRelationships", "CalculationGroups")
+    }
     outer = {k: v for k, v in schema.items() if k != "schema"} if "schema" in schema else {}
     if metadata or outer:
-        core.append("AUTHOR AND MODEL METADATA (reference data): " + json.dumps({**outer, **metadata}, ensure_ascii=False))
+        core.append(
+            "AUTHOR AND MODEL METADATA (reference data): " + json.dumps({**outer, **metadata}, ensure_ascii=False)
+        )
     text = "\n".join(core)
     if len(text) > max_chars - 300:
-        raise ValueError("Structural schema metadata exceeds the context budget. Use search_schema and raw schema sections.")
+        raise ValueError(
+            "Structural schema metadata exceeds the context budget. Use search_schema and raw schema sections."
+        )
     omitted = 0
     for table in selected:
         head = f"TABLE '{table['Name']}'"
@@ -67,7 +87,9 @@ def compact_schema(schema: dict, max_chars: int = 60_000, *, query: str = "", ta
             continue
         text += "\n" + head
         for kind in ("Measures", "Columns"):
-            members = sorted(table.get(kind, []) or [], key=lambda o: -len(words & terms(json.dumps(o, ensure_ascii=False))))
+            members = sorted(
+                table.get(kind, []) or [], key=lambda o: -len(words & terms(json.dumps(o, ensure_ascii=False)))
+            )
             for obj in members:
                 line = f"  {kind[:-1].lower()} [{obj['Name']}] : {obj.get('Type', '')}"
                 if obj.get("Description"):
@@ -79,6 +101,9 @@ def compact_schema(schema: dict, max_chars: int = 60_000, *, query: str = "", ta
                     text += "\n" + line
                 else:
                     omitted += 1
-    text += (f"\nSCHEMA COVERAGE: partial; {omitted} selected objects omitted for size. Use search_schema for additional fields."
-             if omitted or tables else "\nSCHEMA COVERAGE: complete.")
+    text += (
+        f"\nSCHEMA COVERAGE: partial; {omitted} selected objects omitted for size. Use search_schema for additional fields."
+        if omitted or tables
+        else "\nSCHEMA COVERAGE: complete."
+    )
     return text

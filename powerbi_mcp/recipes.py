@@ -1,10 +1,14 @@
 """Validated, bounded query recipes. Parameters are DAX literals, never executable fragments."""
+
 from __future__ import annotations
+
 import math
 import re
 from datetime import date
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from .dax_generator import _NON_CODE, validate_dax
 from .schema import schema_objects
 
@@ -81,7 +85,9 @@ class Recipe(BaseModel):
             if unknown:
                 raise ValueError(f"Step {step.id} references unknown parameters: {sorted(unknown)}")
             if any(PLACEHOLDER.search(match.group()) for match in _NON_CODE.finditer(step.dax)):
-                raise ValueError("Recipe placeholders must be bare DAX values, outside quotes, identifiers and comments.")
+                raise ValueError(
+                    "Recipe placeholders must be bare DAX values, outside quotes, identifiers and comments."
+                )
             validate_dax(PLACEHOLDER.sub("1", step.dax))
             seen.add(step.id)
         return self
@@ -104,6 +110,8 @@ class Recipe(BaseModel):
         if self.models and model_id.lower() not in [m.lower() for m in self.models]:
             raise ValueError("This recipe is not configured for the selected model.")
         available = {(o["table"], o["Name"], o["kind"]) for o in schema_objects(schema)}
-        missing = [f"'{o.table}'[{o.name}]" for o in self.required_objects if (o.table, o.name, o.kind) not in available]
+        missing = [
+            f"'{o.table}'[{o.name}]" for o in self.required_objects if (o.table, o.name, o.kind) not in available
+        ]
         if missing:
             raise ValueError("Recipe references missing model objects: " + ", ".join(missing))

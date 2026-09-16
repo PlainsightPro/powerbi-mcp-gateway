@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 FABRIC_RESOURCE = "https://api.fabric.microsoft.com"
+DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+DEFAULT_MEMORY_DIR = Path(__file__).resolve().parent.parent / ".memories"
 
 
 class Settings(BaseSettings):
@@ -23,6 +26,12 @@ class Settings(BaseSettings):
     api_scope_name: str = "access_as_user"
     server_name: str = "Power BI MCP Gateway"
     oauth_storage_dir: Path | None = None
+    state_storage_account: str | None = None
+    state_table_name: str = "mcpoauth"
+    memory_dir: Path = DEFAULT_MEMORY_DIR
+    memory_table_name: str = "mcpmemories"
+    memory_max_per_model: int = 50
+    memory_max_chars: int = 500
 
     # Power BI / Fabric
     fabric_api_url: str = f"{FABRIC_RESOURCE}/v1"
@@ -31,19 +40,21 @@ class Settings(BaseSettings):
     # Foundry (Azure OpenAI) used by generate_dax
     foundry_endpoint: str | None = None
     foundry_deployment: str = "gpt-5"
-    foundry_reasoning_effort: str = "low"
+    foundry_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "low"
+    foundry_max_output_tokens: int = Field(default=6000, ge=1)
     foundry_api_key: str | None = None  # optional; default is Entra (managed identity / az login)
 
     # Behaviour
     catalog_cache_seconds: int = Field(default=300, ge=0)
     schema_cache_seconds: int = Field(default=600, ge=0)
-    default_max_rows: int = Field(default=250, ge=1, le=5000)
-    max_rows_limit: int = Field(default=5000, ge=1, le=5000)
+    default_max_rows: int = Field(default=250, ge=1, le=10000)
+    max_rows_limit: int = Field(default=10000, ge=1, le=10000)
     cache_max_entries: int = Field(default=256, ge=1)
     timezone: str = "UTC"
     skills_dir: Path = Path(__file__).resolve().parent.parent / "skills"
     host: str = "0.0.0.0"
     port: int = 8000
+    log_level: str = "INFO"
 
     @model_validator(mode="after")
     def validate_behavior(self):
@@ -53,6 +64,8 @@ class Settings(BaseSettings):
             raise ValueError("timezone must be a valid IANA timezone") from exc
         if self.default_max_rows > self.max_rows_limit:
             raise ValueError("default_max_rows exceeds max_rows_limit")
+        if self.oauth_storage_dir and self.state_storage_account:
+            raise ValueError("Choose Azure Table storage or directory storage, not both.")
         if self.oauth_storage_dir and (not self.jwt_signing_key or len(self.jwt_signing_key) < 32):
             raise ValueError("Persistent OAuth storage requires PBIMCP_JWT_SIGNING_KEY of at least 32 characters.")
         return self
