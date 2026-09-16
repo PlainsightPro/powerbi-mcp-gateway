@@ -40,6 +40,7 @@ values; unknown profile keys fail. Use separate resource names and Entra app nam
 | `-RotateSecret` | Issue a new Entra client secret and update the container app |
 | `-ResetSessions` | Rotate the gateway signing key and invalidate existing sessions |
 | `-StorageName <account>` | Persistent OAuth and model-note storage; defaults to a name derived from the registry |
+| `-PreauthorizedClientIds <app id>[,...]` | Applications that pass their own Entra sign-in through instead of using the proxy: pre-authorised on the scope and trusted by the gateway (`PBIMCP_TRUSTED_CLIENT_IDS`); see [first-party applications](connect/first-party-apps.md) |
 
 Existing Foundry endpoints use managed identity; without a resource id, grant access to the app's
 identity yourself. The application also supports `PBIMCP_FOUNDRY_API_KEY` as a runtime alternative,

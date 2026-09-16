@@ -8,11 +8,12 @@ from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.auth.providers.azure import AzureProvider, EntraOBOToken
+from fastmcp.server.auth.providers.azure import EntraOBOToken
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from .analysis import AnalysisService
+from .auth import GatewayAuth
 from .config import Settings, load_settings
 from .contracts import AnalysisContext, AnalysisResult, DiscoveryResult
 from .discovery import Discovery
@@ -68,7 +69,8 @@ def build_server(settings: Settings | None = None, gateway: Gateway | None = Non
         hosted_factory=lambda token, url: gateway._hosted(token),
     )
     service = AnalysisService(settings, skills, catalog, discovery, notes_provider=gateway.notes_for)
-    auth = AzureProvider(
+    auth = GatewayAuth(
+        trusted_client_ids=settings.trusted_client_id_set,
         client_id=settings.client_id,
         client_secret=settings.client_secret,
         tenant_id=settings.tenant_id,

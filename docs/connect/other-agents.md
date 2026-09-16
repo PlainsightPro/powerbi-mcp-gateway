@@ -51,6 +51,8 @@ async with Client("https://<host>/mcp", auth=OAuth("https://<host>/mcp")) as cli
 
 The first run opens a browser for the Microsoft sign-in; tokens are cached locally afterwards.
 `scripts/check_gateway.py` in the repository is a complete example, including a probe query.
+If your application already holds the user's Entra sign-in, skip the proxy and pass that token
+through instead: see [first-party applications](first-party-apps.md).
 For structured tools, FastMCP may return a generated Pydantic object in `.data`. Use
 `powerbi_mcp.client_results.tool_data(result)` to normalize both typed and dictionary responses
 before indexing fields; this helper is used by the setup and evaluation commands.

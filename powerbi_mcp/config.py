@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, model_validator
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     jwt_signing_key: str | None = None
     api_scope_name: str = "access_as_user"
+    # Entra app ids (comma-separated) of applications that sign users in themselves and present the
+    # resulting token for this API directly, without the OAuth proxy. Empty: proxy sign-in only.
+    trusted_client_ids: str = ""
     server_name: str = "Power BI MCP Gateway"
     oauth_storage_dir: Path | None = None
     state_storage_account: str | None = None
@@ -68,7 +72,16 @@ class Settings(BaseSettings):
             raise ValueError("Choose Azure Table storage or directory storage, not both.")
         if self.oauth_storage_dir and (not self.jwt_signing_key or len(self.jwt_signing_key) < 32):
             raise ValueError("Persistent OAuth storage requires PBIMCP_JWT_SIGNING_KEY of at least 32 characters.")
+        for client in self.trusted_client_id_set:
+            try:
+                UUID(client)
+            except ValueError as exc:
+                raise ValueError(f"trusted_client_ids must be Entra application (client) ids; got {client!r}") from exc
         return self
+
+    @property
+    def trusted_client_id_set(self) -> frozenset[str]:
+        return frozenset(part.strip().lower() for part in self.trusted_client_ids.split(",") if part.strip())
 
     @property
     def fabric_scope(self) -> str:

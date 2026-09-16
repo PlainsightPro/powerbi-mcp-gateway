@@ -1,14 +1,47 @@
 version: 2
+# One grouped pull request per ecosystem per week, so a security-relevant bump is not lost among
+# a dozen single-package PRs. Actions are pinned to commit SHAs in the workflows; Dependabot moves
+# the SHA and the version comment together. Every update still goes through the normal CI gates.
 updates:
   - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      python-weekly:
+        patterns: ["*"]
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "chore(deps)"
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      actions-weekly:
+        patterns: ["*"]
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "chore(ci)"
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    groups:
+      docker-weekly:
+        patterns: ["*"]
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "chore(deps)"

@@ -1,0 +1,5 @@
+# Review routing: every pull request requests a review from the maintainers listed here.
+# Replace the user with a team (e.g. @PlainsightPro/<team>) once one owns this repository.
+# Syntax: https://docs.github.com/articles/about-code-owners
+
+* @sanderallert

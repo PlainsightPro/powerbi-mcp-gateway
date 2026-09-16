@@ -130,6 +130,8 @@ def test_model_reconciliation_and_pinned_image_validation():
         ({"FoundryEndpoint": "https://fixture.openai.azure.com", "DisableGeneration": True}, False),
         ({"FoundryResourceId": "/subscriptions/fixture/resourceGroups/fixture"}, False),
         ({"TypoSetting": "wrong"}, False),
+        ({"PreauthorizedClientIds": ["00000000-0000-0000-0000-000000000003"]}, True),
+        ({"PreauthorizedClientIds": "not-an-app-id"}, False),
         ({"TimeZone": "Invalid/Zone"}, False),
     ],
 )

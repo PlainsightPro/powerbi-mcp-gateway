@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# The interpreter that ships is the top of the CI test matrix (.github/workflows/ci.yml); keep them in step.
 FROM python:3.14-slim
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \

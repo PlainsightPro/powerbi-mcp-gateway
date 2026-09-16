@@ -6,7 +6,8 @@
     Creates or updates, idempotently:
       1. Entra app registration "Power BI MCP Server" (confidential client for the OAuth proxy and OBO):
          exposed API scope access_as_user, access-token version 2, delegated Power BI permissions with
-         admin consent, redirect URIs, client secret.
+         admin consent, redirect URIs, client secret, and pre-authorization of first-party applications
+         (-PreauthorizedClientIds) that present their own Entra token instead of signing in through the proxy.
       2. Foundry resource (AIServices, project management on) with a Foundry project and a gpt-5
          Global Standard deployment.
       3. Container registry + image build (az acr build, no local Docker needed).
@@ -69,6 +70,7 @@ param(
     [switch]$SkipBuild,
     [switch]$RotateSecret,
     [switch]$PreauthorizeAzureCli,
+    [string[]]$PreauthorizedClientIds = @(),   # first-party apps (Entra app ids) that present their own token; see docs/connect/first-party-apps.md
     [switch]$WriteLocalEnv
 )
 
@@ -106,6 +108,12 @@ if ($FoundryEndpoint -and (-not [uri]::IsWellFormedUriString($FoundryEndpoint, [
     ([uri]$FoundryEndpoint).Scheme -ne 'https')) { throw 'FoundryEndpoint must be an absolute HTTPS URL.' }
 if ($AcrName -notmatch '^[a-zA-Z0-9]{5,50}$') {
     throw "-AcrName (5-50 alphanumerics, globally unique) is required, on the command line or in the profile"
+}
+$PreauthorizedClientIds = @($PreauthorizedClientIds | Where-Object { $_ } | ForEach-Object { $_.Trim().ToLower() } | Select-Object -Unique)
+foreach ($clientId in $PreauthorizedClientIds) {
+    if ($clientId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+        throw "PreauthorizedClientIds must be Entra application (client) ids (got '$clientId')"
+    }
 }
 if (-not $StorageName) {
     # Storage names are 3-24 lower-case alphanumerics; derive one from the registry name and cut it to length.
@@ -224,10 +232,14 @@ function Patch-Application([hashtable]$Body) {
 }
 Patch-Application @{ api = $api }
 Write-Host "exposed scope api://$appId/access_as_user (token v2)"
-if ($PreauthorizeAzureCli) {
+$preauthorized = @($PreauthorizedClientIds)
+if ($PreauthorizeAzureCli) { $preauthorized += $AzureCliAppId }
+if ($preauthorized) {
     # Graph validates pre-authorizations against scopes that already exist, so this is a second call.
-    Patch-Application @{ api = @{ preAuthorizedApplications = @(@{ appId = $AzureCliAppId; delegatedPermissionIds = @($scopeId) }) } }
-    Write-Host "Azure CLI pre-authorized on that scope"
+    # The list replaces the previous one, so a deployment that drops an app also removes its pre-authorization.
+    $entries = @($preauthorized | Select-Object -Unique | ForEach-Object { @{ appId = $_; delegatedPermissionIds = @($scopeId) } })
+    Patch-Application @{ api = @{ preAuthorizedApplications = $entries } }
+    Write-Host "pre-authorized on that scope: $($preauthorized -join ', ')"
 }
 
 # Merge and deduplicate: permission add appends duplicates on each deployment.
@@ -372,7 +384,8 @@ $envVars = @(
     "PBIMCP_FOUNDRY_REASONING_EFFORT=$ReasoningEffort",
     "PBIMCP_STATE_STORAGE_ACCOUNT=$StorageName",
     "PBIMCP_STATE_TABLE_NAME=$StateTableName",
-    "PBIMCP_TIMEZONE=$TimeZone"
+    "PBIMCP_TIMEZONE=$TimeZone",
+    "PBIMCP_TRUSTED_CLIENT_IDS=$($PreauthorizedClientIds -join ',')"
 )
 # The ingress host name is deterministic (<app>.<environment default domain>), so the app starts
 # with the right PBIMCP_BASE_URL in its first revision instead of a placeholder and a second update.

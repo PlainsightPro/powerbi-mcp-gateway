@@ -15,6 +15,18 @@ uv run python -m powerbi_mcp --check-skills skills
 `AGENTS.md` describes the layout and the design rules; `docs/private-skills.md` explains why the
 example skills are fictional and how real deployments are kept out of this repository.
 
+Optional but recommended, the pre-commit hooks run ruff and a few sanity checks (merge markers,
+private keys, large files) on every commit:
+
+```powershell
+uvx pre-commit install
+```
+
+CI runs the same lint, type and test commands on Python 3.11 and 3.14, builds the image and probes
+`/healthz`, and scans the whole git history for secrets with gitleaks (`.gitleaks.toml`); a
+committed credential fails the build. This is a public repository: never push a real tenant id,
+client secret, workspace name or business number, not even in a test fixture.
+
 ## Rules of thumb
 
 - **No domain terms in `powerbi_mcp/` or `tests/`.** Tool names are generic; prompts, glossary

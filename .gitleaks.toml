@@ -1,0 +1,20 @@
+# gitleaks configuration: the upstream default rules, plus an allowlist for the values this public
+# repository commits on purpose. Real secrets live in the git-ignored .env, in Container App secrets
+# and in Azure Tables, never here. CI runs this over the whole history as a hard gate.
+title = "powerbi-mcp-gateway gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixtures that look like credentials but are not"
+regexes = [
+  # The test and CI dummy signing key (tests/conftest.py, .github/workflows/ci.yml).
+  '''0123456789abcdef0123456789abcdef''',
+  # Bare GUIDs: Entra app ids, permission ids and fixture tenant ids are public identifiers.
+  '''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''',
+]
+stopwords = [
+  "not-a-real-secret",
+  "fixture",
+]

@@ -12,6 +12,7 @@
   "ModelVersion": "2025-08-07",
   "ModelCapacity": 50,
   "EntraAppName": "Power BI MCP Gateway (Contoso)",
+  "PreauthorizedClientIds": [],
   "ServerName": "Contoso Power BI",
   "SkillsDir": "../skills",
   "EngineImage": "",

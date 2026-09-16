@@ -20,6 +20,16 @@ major version.
   into `generate_dax` grounding. Stored in table `mcpmemories` of the deployment's storage
   account (in the clear, for curation), or as JSON files under `PBIMCP_MEMORY_DIR` without one.
 
+### Sign-in
+
+- Applications that sign users in with Entra themselves can send their token for the gateway's
+  API directly (`Authorization: Bearer`, audience `api://<client id>`, scope `access_as_user`)
+  instead of running a second sign-in through the OAuth proxy. Accepted only from app ids in
+  `PBIMCP_TRUSTED_CLIENT_IDS` and only for delegated tokens; the same token is the on-behalf-of
+  assertion, so every query still runs as the user. The deploy profile key
+  `PreauthorizedClientIds` pre-authorises those apps on the scope and sets the variable. See
+  `docs/connect/first-party-apps.md`.
+
 ### Operations
 
 - The container log keeps the Azure SDK, httpx and httpcore at WARNING unless

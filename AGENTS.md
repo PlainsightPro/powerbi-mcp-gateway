@@ -9,7 +9,8 @@ architecture; this file is for working in the code.
 
 | Path | Role |
 |---|---|
-| `powerbi_mcp/server.py` | FastMCP app: AzureProvider OAuth proxy, tools, prompts, resources, `/healthz` |
+| `powerbi_mcp/server.py` | FastMCP app: OAuth proxy, tools, prompts, resources, `/healthz` |
+| `powerbi_mcp/auth.py` | `GatewayAuth`: AzureProvider that also accepts Entra tokens for this API from trusted first-party apps |
 | `powerbi_mcp/analysis.py` | Shared analyze/generate/execute/recipe/diagnostic workflows |
 | `powerbi_mcp/gateway.py` | Shared upstream clients and authorized model-note access; legacy service API |
 | `powerbi_mcp/memory.py` | Shared notes per model, with ownership checks for deletion |
@@ -28,7 +29,10 @@ architecture; this file is for working in the code.
 | `deploy/deploy_to_azure.ps1` | Idempotent Azure deploy (Entra app, Foundry, ACR, Container Apps); `-Profile` JSON, `-EngineImage` |
 | `deploy/build_context.ps1` | Stages only runtime code + selected skills, or `FROM <engine image>` + skills |
 | `deploy/profiles/example.json` | Every profile key, fictional values |
+| `.github/workflows/ci.yml` | PR/main gate: lint, types, tests on 3.11 and 3.14 (the image's Python), image probe, gitleaks over the history; pip-audit is informational |
 | `.github/workflows/release.yml` | Tag `vX.Y.Z` publishes `ghcr.io/plainsightpro/powerbi-mcp-gateway:X.Y.Z` |
+| `.gitleaks.toml`, `.pre-commit-config.yaml` | Secret-scan allowlist (fixture values only) and the optional local hooks (`uvx pre-commit install`) |
+| `.claude/settings.json` | Claude Code allowlist for the read-only and test commands below |
 | `scripts/smoke_test.py` | Headless end-to-end check of everything behind the OAuth proxy |
 | `scripts/check_gateway.py` | Real-OAuth check of a deployed gateway |
 | `docs/` | Consumer walkthroughs per client, usage guidelines, troubleshooting, administration, skills authoring |
@@ -59,6 +63,9 @@ uv run pyright
   would not apply.
 - The OAuth proxy issues its own tokens; MCP clients register dynamically (DCR, CIMD). Keep
   `forward_resource=False`: Entra's v2 endpoint rejects an RFC 8707 `resource` next to `scope`.
+- First-party applications may present a raw Entra token for this API instead (`GatewayAuth`),
+  but only from app ids in `PBIMCP_TRUSTED_CLIENT_IDS` and only delegated tokens (`scp`, never
+  `roles` alone). The proxy path is tried first; a token it did not issue falls through.
 - Do not put downstream (Fabric) scopes in `additional_authorize_scopes`; admin consent on the
   app's delegated Power BI permissions is what makes the OBO exchange work.
 - Text answers on structured hosted-MCP tools are errors (that is how the hosted server reports a
